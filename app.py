@@ -286,6 +286,7 @@ PAGE = """<!doctype html>
   <title>Muga • Portfolio — Caleb Muga</title>
 
   <!-- SEO / OpenGraph -->
+  <meta name="google-site-verification" content="xN8zzUOK3ngMEFkP7XrSySJp_i9oCxQLBeWPBc0QHQE" />
   <meta name="description" content="TechKnow Solutions — Caleb Muga: ICT Support, Networking, Cybersecurity, and process automation. Contact for services and view portfolio.">
   <meta name="author" content="Caleb Muga">
   <meta property="og:title" content="TechKnow Solutions — Caleb Muga">
