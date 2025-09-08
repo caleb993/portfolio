@@ -1,0 +1,34 @@
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Database and CSV files
+*.db
+*.sqlite3
+*.csv
+*.log
+
+# Uploaded files (keep folders, ignore content)
+uploads_projects/*
+uploads_pending/*
+uploads_cv/*
+uploads_photo/*
+uploads/*
+media/gallery/*
+media/hero/*
+media/profile/*
+
+# But keep empty folder markers
+!uploads_projects/.gitkeep
+!uploads_pending/.gitkeep
+!uploads_cv/.gitkeep
+!uploads_photo/.gitkeep
+!uploads/.gitkeep
+!media/gallery/.gitkeep
+!media/hero/.gitkeep
+!media/profile/.gitkeep
+
+# Environment files
+.env
