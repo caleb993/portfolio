@@ -1,5 +1,8 @@
 # app.py
-from flask import Flask, render_template_string, request, redirect, url_for, send_from_directory, flash, abort, session, jsonify
+from flask import (
+    Flask, render_template_string, request, redirect, url_for,
+    send_from_directory, flash, abort, session, jsonify, Response
+)
 from werkzeug.utils import secure_filename
 import os
 from datetime import datetime, timedelta
@@ -12,20 +15,27 @@ import re
 import json
 from collections import Counter, defaultdict
 
-app = Flask(__name__)
-app.secret_key = os.environ.get("SECRET_KEY", secrets.token_hex(16))
+# Load environment variables safely
+from dotenv import load_dotenv
+load_dotenv()
+
+# Optional Supabase client
+try:
+    from supabase import create_client
+except Exception:
+    create_client = None
 
 # ====== CONFIG ======
-ADMIN_KEY = os.environ.get("ADMIN_KEY", "calebadmin")  # change this for production
+ADMIN_KEY = os.environ.get("ADMIN_KEY", "calebadmin")  # update in env for production
 BASE_DIR = os.path.abspath(os.path.dirname(__file__))
 DATA_DIR = os.path.join(BASE_DIR, "data")
 
-# Existing file areas
+# Existing file areas (local)
 UPLOAD_DIR_APPROVED = os.path.join(BASE_DIR, "uploads_projects")
 UPLOAD_DIR_PENDING = os.path.join(BASE_DIR, "uploads_pending")
 UPLOAD_DIR_CV = os.path.join(BASE_DIR, "uploads_cv")
 
-# Media areas
+# Media areas (local)
 MEDIA_DIR = os.path.join(BASE_DIR, "media")
 MEDIA_PROFILE = os.path.join(MEDIA_DIR, "profile")
 MEDIA_HERO = os.path.join(MEDIA_DIR, "hero")
@@ -35,10 +45,11 @@ MEDIA_GALLERY = os.path.join(MEDIA_DIR, "gallery")
 BLOG_DIR = os.path.join(DATA_DIR, "blog")
 BLOG_CSV = os.path.join(BLOG_DIR, "blogs.csv")
 
-# Newsletter subscribers CSV (Phase 1 addition)
+# Newsletter subscribers CSV
 NEWSLETTER_CSV = os.path.join(DATA_DIR, "newsletter.csv")
 NEWSLETTER_FIELDS = ["timestamp", "email"]
 
+# Create local directories if missing (preserve earlier logic)
 os.makedirs(DATA_DIR, exist_ok=True)
 os.makedirs(UPLOAD_DIR_APPROVED, exist_ok=True)
 os.makedirs(UPLOAD_DIR_PENDING, exist_ok=True)
@@ -49,15 +60,117 @@ os.makedirs(MEDIA_HERO, exist_ok=True)
 os.makedirs(MEDIA_GALLERY, exist_ok=True)
 os.makedirs(BLOG_DIR, exist_ok=True)
 
-# allowed extensions (includes common video types for gallery)
+# allowed extensions
 ALLOWED_EXTS = {"pdf", "doc", "docx", "png", "jpg", "jpeg", "zip", "txt", "ppt", "pptx", "webp", "gif", "mp4", "webm", "ogg", "mov", "m4v"}
 IMAGE_EXTS = {"png", "jpg", "jpeg", "webp", "gif"}
 VIDEO_EXTS = {"mp4", "webm", "ogg", "mov", "m4v"}
-app.config["MAX_CONTENT_LENGTH"] = 32 * 1024 * 1024  # 32 MB
+MAX_CONTENT_LENGTH = 32 * 1024 * 1024  # 32 MB
 
+# CSV files
 MESSAGES_CSV = os.path.join(DATA_DIR, "messages.csv")
 MSG_FIELDNAMES = ["timestamp", "name", "email", "message", "status"]
 BLOG_FIELDNAMES = ["id", "timestamp", "title", "slug", "content"]
+
+# Flask app
+app = Flask(__name__)
+app.secret_key = os.environ.get("SECRET_KEY", secrets.token_hex(16))
+app.config["MAX_CONTENT_LENGTH"] = MAX_CONTENT_LENGTH
+
+# ====== Supabase configuration (optional) ======
+SUPABASE_URL = os.environ.get("SUPABASE_URL")  # e.g. https://<project>.supabase.co
+SUPABASE_KEY = os.environ.get("SUPABASE_KEY")  # service_role or anon (keep secret)
+SUPABASE_ENABLED = False
+supabase = None
+
+if create_client and SUPABASE_URL and SUPABASE_KEY:
+    try:
+        supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
+        SUPABASE_ENABLED = True
+        print("🔗 Supabase enabled.")
+    except Exception as e:
+        supabase = None
+        SUPABASE_ENABLED = False
+        print("⚠️ Supabase initialization failed:", e)
+else:
+    if not create_client:
+        print("⚠️ supabase client not installed; continuing without Supabase.")
+    else:
+        print("⚠️ SUPABASE_URL or SUPABASE_KEY not set; continuing without Supabase.")
+
+# Map local folders to Supabase buckets / prefixes (you said you created these)
+# We store files in Supabase with the same logical layout:
+# - bucket 'data'              -> paths like 'messages.csv', 'blog/blogs.csv', 'site.db'
+# - bucket 'media'             -> paths like 'gallery/<file>', 'profile/<file>', 'hero/<file>'
+# - bucket 'uploads_cv'        -> root CV files
+# - bucket 'uploads_projects'  -> approved projects
+# - bucket 'uploads_pending'   -> pending uploads
+# - bucket 'uploads_photo'     -> photos (if used)
+BUCKET_MAP = {
+    "data": "data",
+    "media": "media",
+    "uploads_cv": "uploads_cv",
+    "uploads_projects": "uploads_projects",
+    "uploads_photo": "uploads_photo",
+    "uploads_pending": "uploads_pending",
+}
+
+# Helpers for Supabase operations (safe wrappers)
+def supabase_public_url(bucket: str, path: str) -> str:
+    """Return the public storage URL for a given bucket/path (works if bucket is public)."""
+    if not SUPABASE_URL:
+        return ""
+    # ensure path is URL-encoded but keep slashes
+    quoted = "/".join(urllib.parse.quote(p) for p in path.split("/"))
+    return f"{SUPABASE_URL.rstrip('/')}/storage/v1/object/public/{bucket}/{quoted}"
+
+def supabase_upload_file(bucket: str, remote_path: str, local_file_path: str) -> bool:
+    """Upload a local file to Supabase storage under bucket/remote_path. Returns True on success."""
+    if not SUPABASE_ENABLED:
+        return False
+    try:
+        with open(local_file_path, "rb") as f:
+            # The supabase python client accepts a file-like object here
+            supabase.storage.from_(bucket).upload(remote_path, f, {"upsert": True})
+        return True
+    except Exception as e:
+        print(f"❌ Supabase upload failed: {bucket}/{remote_path} | {e}")
+        return False
+
+def supabase_delete_file(bucket: str, remote_path: str) -> bool:
+    """Delete a file in Supabase storage. Returns True on success or if file not present."""
+    if not SUPABASE_ENABLED:
+        return False
+    try:
+        # remove expects a list of paths
+        supabase.storage.from_(bucket).remove([remote_path])
+        return True
+    except Exception as e:
+        # If remove fails, print & continue
+        print(f"❌ Supabase delete failed: {bucket}/{remote_path} | {e}")
+        return False
+
+def supabase_list_files(bucket: str, prefix: str = "") -> list:
+    """
+    List files in a Supabase bucket. Returns a list of file paths (strings).
+    If bucket is not available, returns [].
+    """
+    if not SUPABASE_ENABLED:
+        return []
+    try:
+        items = supabase.storage.from_(bucket).list(prefix)
+        out = []
+        for it in items:
+            # If item has 'id' None it's a folder; else it's file
+            # The 'name' returned is the item name (not full path) - if you used prefix, we can join
+            if it.get("id") is None:
+                # folder entry - list its children recursively
+                # but here we just skip folders (client.list with prefix can return folder and file items)
+                continue
+            out.append(it.get("name"))
+        return out
+    except Exception as e:
+        print(f"❌ Supabase list failed for {bucket}/{prefix} | {e}")
+        return []
 
 # ====== HELPERS ======
 def allowed_file(filename: str) -> bool:
@@ -105,40 +218,112 @@ def save_all_messages(msgs):
             writer.writerow(out)
 
 def list_projects():
+    """
+    Return list of approved project filenames.
+    Priority: local directory if present; else Supabase bucket 'uploads_projects' if enabled.
+    """
     try:
-        return sorted(os.listdir(UPLOAD_DIR_APPROVED))
+        if os.path.exists(UPLOAD_DIR_APPROVED):
+            return sorted([f for f in os.listdir(UPLOAD_DIR_APPROVED) if os.path.isfile(os.path.join(UPLOAD_DIR_APPROVED, f))])
     except FileNotFoundError:
-        return []
+        pass
+
+    # fallback to Supabase listing
+    if SUPABASE_ENABLED:
+        try:
+            names = supabase_list_files(BUCKET_MAP["uploads_projects"], "")
+            # supabase_list_files returns item names (not full path) when listing at root
+            return sorted(names)
+        except Exception:
+            return []
+    return []
 
 def list_pending():
+    """
+    Return list of pending (unapproved) filenames.
+    Priority: local pending folder; else Supabase.
+    """
     try:
-        return sorted(os.listdir(UPLOAD_DIR_PENDING))
+        if os.path.exists(UPLOAD_DIR_PENDING):
+            return sorted([f for f in os.listdir(UPLOAD_DIR_PENDING) if os.path.isfile(os.path.join(UPLOAD_DIR_PENDING, f))])
     except FileNotFoundError:
-        return []
+        pass
+
+    if SUPABASE_ENABLED:
+        return sorted(supabase_list_files(BUCKET_MAP["uploads_pending"], ""))
+    return []
 
 def owner_cv_filename():
-    files = sorted(os.listdir(UPLOAD_DIR_CV))
-    return files[0] if files else None
+    """
+    Return the owner's CV filename (first found). Local preferred.
+    """
+    try:
+        files = sorted([f for f in os.listdir(UPLOAD_DIR_CV) if os.path.isfile(os.path.join(UPLOAD_DIR_CV, f))])
+        if files:
+            return files[0]
+    except FileNotFoundError:
+        pass
 
-def handle_upload(up, folder, rename_to=None):
+    # Try Supabase bucket
+    if SUPABASE_ENABLED:
+        try:
+            names = supabase_list_files(BUCKET_MAP["uploads_cv"], "")
+            if names:
+                return sorted(names)[0]
+        except Exception:
+            pass
+    return None
+
+def handle_upload(up, folder, rename_to=None, supabase_bucket=None, supabase_prefix=""):
+    """
+    Save uploaded file locally and optionally upload to Supabase.
+    Returns (filename, error_message)
+    """
     if not up or up.filename == "":
         return None, "No file selected."
     if not allowed_file(up.filename):
         return None, "Invalid file type."
     fname = rename_to or (datetime.now().strftime("%Y%m%d_%H%M%S_") + secure_filename(up.filename))
-    up.save(os.path.join(folder, fname))
+    local_path = os.path.join(folder, fname)
+    up.save(local_path)
+
+    # upload to supabase if configured
+    if SUPABASE_ENABLED and supabase_bucket:
+        remote_path = (supabase_prefix + fname).lstrip("/")
+        try:
+            with open(local_path, "rb") as f:
+                supabase.storage.from_(supabase_bucket).upload(remote_path, f, {"upsert": True})
+        except Exception as e:
+            print(f"❌ Supabase upload (handle_upload) failed for {remote_path}: {e}")
+            # not fatal; continue
     return fname, None
 
-def handle_image_upload(up, folder, rename_to=None):
+def handle_image_upload(up, folder, rename_to=None, supabase_bucket=None, supabase_prefix=""):
+    """
+    Save image locally and optionally upload to Supabase. Similar to handle_upload.
+    """
     if not up or up.filename == "":
         return None, "No image selected."
     if not allowed_image(up.filename):
         return None, "Invalid image type."
     fname = rename_to or (datetime.now().strftime("%Y%m%d_%H%M%S_") + secure_filename(up.filename))
-    up.save(os.path.join(folder, fname))
+    local_path = os.path.join(folder, fname)
+    up.save(local_path)
+
+    # upload to supabase if needed
+    if SUPABASE_ENABLED and supabase_bucket:
+        remote_path = (supabase_prefix + fname).lstrip("/")
+        try:
+            with open(local_path, "rb") as f:
+                supabase.storage.from_(supabase_bucket).upload(remote_path, f, {"upsert": True})
+        except Exception as e:
+            print(f"❌ Supabase upload (handle_image_upload) failed for {remote_path}: {e}")
     return fname, None
 
 def require_admin():
+    """
+    Check if session indicates admin access (keeps your original behavior).
+    """
     if not session.get("is_admin"):
         flash("Please log in as admin.")
         return False
@@ -161,7 +346,7 @@ def latest_file(folder, only_images=False):
         return None, None
 
 def list_images(folder):
-    """Return only image filenames in folder, newest-first (keeps backward compatibility)."""
+    """Return only image filenames in folder, newest-first (local only)."""
     try:
         imgs = [f for f in os.listdir(folder) if allowed_image(f)]
         imgs.sort(key=lambda n: os.path.getmtime(os.path.join(folder, n)), reverse=True)
@@ -169,39 +354,23 @@ def list_images(folder):
     except FileNotFoundError:
         return []
 
-def list_gallery_media(folder=MEDIA_GALLERY):
-    """
-    Return list of gallery media items (images + videos), each item is a dict:
-      { "name": "<filename>", "type": "image" or "video", "url": "<url>" }
-    Sorted newest-first.
-    """
-    try:
-        entries = []
-        for f in os.listdir(folder):
-            p = os.path.join(folder, f)
-            if not os.path.isfile(p):
-                continue
-            ext = f.rsplit(".", 1)[-1].lower() if "." in f else ""
-            if ext in IMAGE_EXTS or ext in VIDEO_EXTS:
-                entries.append((f, os.path.getmtime(p)))
-        if not entries:
-            return []
-        entries.sort(key=lambda x: x[1], reverse=True)
-        out = []
-        for fname, _ in entries:
-            typ = "image" if allowed_image(fname) else "video" if allowed_video(fname) else "other"
-            out.append({"name": fname, "type": typ, "url": media_url("gallery", fname)})
-        return out
-    except FileNotFoundError:
-        return []
-
 def media_url(kind, filename):
+    """
+    Build media URL for profile/hero/gallery.
+    If file available locally, serve via media_file; else, if Supabase enabled, return public Supabase URL.
+    """
     if not filename:
         return None
     folder = MEDIA_PROFILE if kind == "profile" else MEDIA_HERO if kind == "hero" else MEDIA_GALLERY
     path = os.path.join(folder, filename)
-    v = int(os.path.getmtime(path)) if os.path.exists(path) else 0
-    return url_for("media_file", kind=kind, filename=filename) + f"?v={v}"
+    if os.path.exists(path):
+        v = int(os.path.getmtime(path))
+        return url_for("media_file", kind=kind, filename=filename) + f"?v={v}"
+    # fallback to Supabase public URL
+    if SUPABASE_ENABLED:
+        remote_path = f"{kind}/{filename}"
+        return supabase_public_url(BUCKET_MAP["media"], remote_path) + f"?v=0"
+    return None
 
 def slugify(text: str) -> str:
     s = text.lower().strip()
@@ -217,6 +386,18 @@ def load_blogs():
             reader = csv.DictReader(f)
             for row in reader:
                 blogs.append(row)
+    else:
+        # If local CSV missing but Supabase enabled, try to fetch blog CSV from Supabase
+        if SUPABASE_ENABLED:
+            try:
+                bucket = BUCKET_MAP["data"]
+                # try to list and download 'blog/blogs.csv' via public URL
+                remote_path = "blog/blogs.csv"
+                public = supabase_public_url(bucket, remote_path)
+                # if the public url is available, we can attempt to request it (optional: avoid external requests)
+                # For simplicity here, we skip auto-download to keep logic predictable.
+            except Exception:
+                pass
     return blogs
 
 def save_all_blogs(blogs):
@@ -258,7 +439,7 @@ def delete_blog_by_id(bid):
     remaining = [b for b in blogs if b.get("id") != str(bid)]
     save_all_blogs(remaining)
 
-# ====== NEWSLETTER HELPERS (Phase 1) ======
+# ====== NEWSLETTER HELPERS ======
 def save_subscriber(email: str) -> None:
     newfile = not os.path.exists(NEWSLETTER_CSV)
     with open(NEWSLETTER_CSV, "a", newline="", encoding="utf-8") as f:
@@ -276,8 +457,7 @@ def load_subscribers():
                 subs.append(row)
     return subs
 
-# ====== TEMPLATES (main page + blog and sections) ======
-# Main PAGE with SEO meta + Open Graph and newsletter section and accessibility touches
+# ====== PAGE TEMPLATE (unchanged content kept) ======
 PAGE = """<!doctype html>
 <html lang="en">
 <head>
@@ -692,11 +872,131 @@ PAGE = """<!doctype html>
 """
 
 # ====== ROUTES ======
+
+@app.route("/sitemap.xml", methods=["GET"])
+def sitemap():
+    """Generate sitemap dynamically"""
+    pages = []
+
+    # Homepage
+    pages.append({
+        "loc": url_for("index", _external=True),
+        "changefreq": "weekly",
+        "priority": 0.8
+    })
+
+    # Blog list page
+    pages.append({
+        "loc": url_for("blog_list", _external=True),
+        "changefreq": "weekly",
+        "priority": 0.8
+    })
+
+    # Individual blog posts
+    blogs = load_blogs()
+    for blog in blogs:
+        pages.append({
+            "loc": url_for("view_blog", slug=blog.get("slug"), _external=True),
+            "changefreq": "weekly",
+            "priority": 0.8
+        })
+
+    # Portfolio projects
+    projects = list_projects()
+    for fname in projects:
+        pages.append({
+            "loc": url_for("download_file", kind="project", filename=fname, _external=True),
+            "changefreq": "monthly",
+            "priority": 0.6
+        })
+
+    # Gallery images
+    # For small sites this is fine; skip heavy lists
+    gallery_items = []
+    try:
+        # prefer local gallery
+        if os.path.exists(MEDIA_GALLERY):
+            gallery_items = [f for f in os.listdir(MEDIA_GALLERY) if os.path.isfile(os.path.join(MEDIA_GALLERY, f))]
+        elif SUPABASE_ENABLED:
+            gallery_items = supabase_list_files(BUCKET_MAP["media"], "gallery")
+    except Exception:
+        gallery_items = []
+
+    for fname in gallery_items:
+        pages.append({
+            "loc": url_for("media_file", kind="gallery", filename=fname, _external=True),
+            "changefreq": "monthly",
+            "priority": 0.5
+        })
+
+    # Generate XML
+    sitemap_xml = '<?xml version="1.0" encoding="UTF-8"?>\n'
+    sitemap_xml += '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n'
+
+    for page in pages:
+        sitemap_xml += "  <url>\n"
+        sitemap_xml += f"    <loc>{page['loc']}</loc>\n"
+        sitemap_xml += f"    <changefreq>{page['changefreq']}</changefreq>\n"
+        sitemap_xml += f"    <priority>{page['priority']}</priority>\n"
+        sitemap_xml += "  </url>\n"
+
+    sitemap_xml += "</urlset>"
+
+    return Response(sitemap_xml, mimetype="application/xml")
+
 @app.route("/", methods=["GET"])
 def index():
     prof, _ = latest_file(MEDIA_PROFILE, only_images=True)
     hero, _ = latest_file(MEDIA_HERO, only_images=True)
-    gallery = list_gallery_media(MEDIA_GALLERY)  # list of dicts {name,type,url}
+
+    # Build gallery - prefer local files; if empty and Supabase enabled, fetch from Supabase
+    gallery = []
+    # Local gallery
+    try:
+        if os.path.exists(MEDIA_GALLERY):
+            entries = []
+            for f in os.listdir(MEDIA_GALLERY):
+                p = os.path.join(MEDIA_GALLERY, f)
+                if not os.path.isfile(p):
+                    continue
+                ext = f.rsplit(".", 1)[-1].lower() if "." in f else ""
+                if ext in IMAGE_EXTS or ext in VIDEO_EXTS:
+                    entries.append((f, os.path.getmtime(p)))
+            entries.sort(key=lambda x: x[1], reverse=True)
+            for fname, _ in entries:
+                typ = "image" if allowed_image(fname) else "video" if allowed_video(fname) else "other"
+                gallery.append({"name": fname, "type": typ, "url": media_url("gallery", fname)})
+    except Exception:
+        gallery = []
+
+    # If gallery empty, attempt Supabase (list 'media' bucket under 'gallery' prefix)
+    if not gallery and SUPABASE_ENABLED:
+        try:
+            items = supabase.storage.from_(BUCKET_MAP["media"]).list("gallery")
+            # items may include folders and files
+            for it in items:
+                if it.get("id") is None:
+                    # skip folder entries
+                    continue
+                name = it.get("name")
+                # name might be e.g. 'gallery/filename' or just 'filename' depending on API - handle both
+                if "/" in name:
+                    # if name is 'gallery/filename'
+                    parts = name.split("/", 1)
+                    if parts[0] == "gallery":
+                        fname = parts[1]
+                    else:
+                        fname = name
+                else:
+                    fname = name
+                ext = fname.rsplit(".", 1)[-1].lower() if "." in fname else ""
+                typ = "image" if ext in IMAGE_EXTS else "video" if ext in VIDEO_EXTS else "other"
+                url = supabase_public_url(BUCKET_MAP["media"], f"gallery/{fname}")
+                gallery.append({"name": fname, "type": typ, "url": url})
+            # newest-first attempt: client list may return timestamps but we don't rely on them here
+        except Exception as e:
+            print("⚠️ Could not list Supabase gallery:", e)
+
     blogs = load_blogs()
 
     return render_template_string(
@@ -733,33 +1033,68 @@ def contact():
     flash("Thanks, your message was received! ✅")
     return redirect(url_for("index") + "#contact")
 
+# ====== Upload project (visitor) ======
 @app.route("/upload_project", methods=["POST"])
 def upload_project():
     up = request.files.get("file")
-    fname, err = handle_upload(up, UPLOAD_DIR_PENDING)
+    # Save locally and upload to Supabase pending bucket if configured
+    fname, err = handle_upload(up, UPLOAD_DIR_PENDING, supabase_bucket=BUCKET_MAP.get("uploads_pending"), supabase_prefix="")
     if err:
         flash(err)
     else:
         flash(f"Project '{fname}' uploaded (private). Admin will review. ✅")
     return redirect(url_for("index") + "#portfolio")
 
+# ====== Download & media serving (support local first then supabase) ======
 @app.route("/download/<kind>/<path:filename>")
 def download_file(kind, filename):
+    # kind: "project" (approved) or "cv"
+    safe = secure_filename(urllib.parse.unquote(filename))
     if kind == "project":
-        return send_from_directory(UPLOAD_DIR_APPROVED, filename, as_attachment=True)
+        local_path = os.path.join(UPLOAD_DIR_APPROVED, safe)
+        if os.path.exists(local_path):
+            return send_from_directory(UPLOAD_DIR_APPROVED, safe, as_attachment=True)
+        # fallback to Supabase public URL
+        if SUPABASE_ENABLED:
+            public = supabase_public_url(BUCKET_MAP["uploads_projects"], safe)
+            return redirect(public)
     elif kind == "cv":
-        return send_from_directory(UPLOAD_DIR_CV, filename, as_attachment=True)
+        local_path = os.path.join(UPLOAD_DIR_CV, safe)
+        if os.path.exists(local_path):
+            return send_from_directory(UPLOAD_DIR_CV, safe, as_attachment=True)
+        if SUPABASE_ENABLED:
+            public = supabase_public_url(BUCKET_MAP["uploads_cv"], safe)
+            return redirect(public)
     abort(404)
 
 @app.route("/media/<kind>/<path:filename>")
 def media_file(kind, filename):
-    safe = secure_filename(filename)
+    safe = secure_filename(urllib.parse.unquote(filename))
     if kind == "profile":
-        return send_from_directory(MEDIA_PROFILE, safe)
+        local_folder = MEDIA_PROFILE
+        local_path = os.path.join(local_folder, safe)
+        if os.path.exists(local_path):
+            return send_from_directory(local_folder, safe)
+        # fallback Supabase
+        if SUPABASE_ENABLED:
+            public = supabase_public_url(BUCKET_MAP["media"], f"profile/{safe}")
+            return redirect(public)
     if kind == "hero":
-        return send_from_directory(MEDIA_HERO, safe)
+        local_folder = MEDIA_HERO
+        local_path = os.path.join(local_folder, safe)
+        if os.path.exists(local_path):
+            return send_from_directory(local_folder, safe)
+        if SUPABASE_ENABLED:
+            public = supabase_public_url(BUCKET_MAP["media"], f"hero/{safe}")
+            return redirect(public)
     if kind == "gallery":
-        return send_from_directory(MEDIA_GALLERY, safe)
+        local_folder = MEDIA_GALLERY
+        local_path = os.path.join(local_folder, safe)
+        if os.path.exists(local_path):
+            return send_from_directory(local_folder, safe)
+        if SUPABASE_ENABLED:
+            public = supabase_public_url(BUCKET_MAP["media"], f"gallery/{safe}")
+            return redirect(public)
     abort(404)
 
 # ====== BLOG PUBLIC ======
@@ -820,6 +1155,7 @@ def view_blog(slug):
 # ====== AUTH ======
 @app.route("/login", methods=["GET", "POST"])
 def login():
+    # original login behavior preserved: compares posted code to ADMIN_KEY and sets session["is_admin"]
     if request.method == "POST":
         code = request.form.get("code", "")
         if code == ADMIN_KEY:
@@ -898,11 +1234,47 @@ def admin():
 
     prof, _ = latest_file(MEDIA_PROFILE, only_images=True)
     hero, _ = latest_file(MEDIA_HERO, only_images=True)
-    gal = list_gallery_media(MEDIA_GALLERY)  # gallery items (images + videos)
+    # gallery list both local and supabase-aware
+    gal = []
+    # local gallery first
+    try:
+        if os.path.exists(MEDIA_GALLERY):
+            for f in sorted(os.listdir(MEDIA_GALLERY), reverse=True):
+                p = os.path.join(MEDIA_GALLERY, f)
+                if not os.path.isfile(p):
+                    continue
+                ext = f.rsplit(".", 1)[-1].lower() if "." in f else ""
+                typ = "image" if ext in IMAGE_EXTS else "video" if ext in VIDEO_EXTS else "other"
+                gal.append({"name": f, "type": typ, "url": media_url("gallery", f)})
+    except Exception:
+        gal = []
+    # fallback to supabase if empty and enabled
+    if not gal and SUPABASE_ENABLED:
+        try:
+            items = supabase.storage.from_(BUCKET_MAP["media"]).list("gallery")
+            for it in items:
+                if it.get("id") is None:
+                    continue
+                name = it.get("name")
+                if "/" in name:
+                    parts = name.split("/", 1)
+                    if parts[0] == "gallery":
+                        fname = parts[1]
+                    else:
+                        fname = name
+                else:
+                    fname = name
+                ext = fname.rsplit(".", 1)[-1].lower() if "." in fname else ""
+                typ = "image" if ext in IMAGE_EXTS else "video" if ext in VIDEO_EXTS else "other"
+                url = supabase_public_url(BUCKET_MAP["media"], f"gallery/{fname}")
+                gal.append({"name": fname, "type": typ, "url": url})
+        except Exception as e:
+            print("⚠️ Could not list gallery for admin:", e)
+
     blogs = load_blogs()
     subscribers = load_subscribers()
 
-    # ADMIN_PAGE includes Chart.js analytics and improved message modal scripts
+    # ADMIN_PAGE includes Chart.js analytics and improved message modal scripts (kept as original)
     ADMIN_PAGE = """<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Admin • Panel</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
@@ -1362,6 +1734,7 @@ def delete_project(filename):
     fname = urllib.parse.unquote(filename)
     safe_name = secure_filename(fname)
     path = os.path.join(UPLOAD_DIR_APPROVED, safe_name)
+    # delete local file if exists
     if os.path.exists(path):
         try:
             os.remove(path)
@@ -1369,7 +1742,10 @@ def delete_project(filename):
         except OSError:
             flash("Could not delete file.")
     else:
-        flash("File not found.")
+        flash("File not found locally.")
+    # delete remote copy if Supabase enabled
+    if SUPABASE_ENABLED:
+        supabase_delete_file(BUCKET_MAP["uploads_projects"], safe_name)
     return redirect(url_for("admin"))
 
 @app.route("/admin/approve/<path:filename>", methods=["POST"])
@@ -1381,10 +1757,23 @@ def approve_file(filename):
     src = os.path.join(UPLOAD_DIR_PENDING, safe_name)
     dst = os.path.join(UPLOAD_DIR_APPROVED, safe_name)
     if os.path.exists(src):
-        shutil.move(src, dst)
-        flash(f"Approved '{safe_name}'.")
+        try:
+            shutil.move(src, dst)
+            flash(f"Approved '{safe_name}'.")
+        except Exception:
+            flash("Could not move file.")
     else:
         flash("File not found.")
+    # Supabase: copy remote pending -> uploads_projects (upload local dst) then delete pending remote
+    if SUPABASE_ENABLED:
+        try:
+            # upload newly moved local file to uploads_projects bucket
+            if os.path.exists(dst):
+                supabase_upload_file(BUCKET_MAP["uploads_projects"], safe_name, dst)
+            # remove from pending remote (best-effort)
+            supabase_delete_file(BUCKET_MAP["uploads_pending"], safe_name)
+        except Exception as e:
+            print("⚠️ Supabase approve handling issue:", e)
     return redirect(url_for("admin"))
 
 @app.route("/admin/reject/<path:filename>", methods=["POST"])
@@ -1399,6 +1788,9 @@ def reject_file(filename):
         flash(f"Rejected '{safe_name}'.")
     else:
         flash("File not found.")
+    # also remove remote pending file
+    if SUPABASE_ENABLED:
+        supabase_delete_file(BUCKET_MAP["uploads_pending"], safe_name)
     return redirect(url_for("admin"))
 
 # ====== CV UPLOAD (admin only) ======
@@ -1414,13 +1806,29 @@ def upload_cv_admin():
         flash("Invalid file type.")
         return redirect(url_for("admin"))
     ext = up.filename.rsplit(".", 1)[1].lower()
+    # remove local existing CVs
     for f in os.listdir(UPLOAD_DIR_CV):
         try:
             os.remove(os.path.join(UPLOAD_DIR_CV, f))
         except OSError:
             pass
     fname = f"Caleb_Muga_CV.{ext}"
-    up.save(os.path.join(UPLOAD_DIR_CV, secure_filename(fname)))
+    safe_fname = secure_filename(fname)
+    up.save(os.path.join(UPLOAD_DIR_CV, safe_fname))
+    # upload to supabase and remove other remote CVs
+    if SUPABASE_ENABLED:
+        # delete remote files in uploads_cv then upload new one
+        try:
+            # attempt to list remote cv files and delete them
+            remote_files = supabase_list_files(BUCKET_MAP["uploads_cv"], "")
+            for rf in remote_files:
+                if rf and rf != safe_fname:
+                    supabase_delete_file(BUCKET_MAP["uploads_cv"], rf)
+        except Exception:
+            pass
+        # upload new cv
+        supabase_upload_file(BUCKET_MAP["uploads_cv"], safe_fname, os.path.join(UPLOAD_DIR_CV, safe_fname))
+
     flash("CV uploaded successfully! ✅")
     return redirect(url_for("admin"))
 
@@ -1430,16 +1838,31 @@ def upload_profile_image():
     if not require_admin():
         return redirect(url_for("login"))
     up = request.files.get("image")
-    fname, err = handle_image_upload(up, MEDIA_PROFILE, rename_to=None)
+    fname, err = handle_image_upload(up, MEDIA_PROFILE, rename_to=None, supabase_bucket=BUCKET_MAP.get("media"), supabase_prefix="profile/")
     if err:
         flash(err)
         return redirect(url_for("admin"))
+    # remove local other files
     for f in os.listdir(MEDIA_PROFILE):
         if f != fname:
             try:
                 os.remove(os.path.join(MEDIA_PROFILE, f))
             except OSError:
                 pass
+    # remove remote profile images except this one
+    if SUPABASE_ENABLED:
+        try:
+            remote_files = supabase_list_files(BUCKET_MAP["media"], "profile")
+            for rf in remote_files:
+                # rf might be 'profile/xxx' or 'xxx' depending on API - normalize
+                if "/" in rf:
+                    rf_name = rf.split("/", 1)[1]
+                else:
+                    rf_name = rf
+                if rf_name != fname:
+                    supabase_delete_file(BUCKET_MAP["media"], f"profile/{rf_name}")
+        except Exception:
+            pass
     flash("Profile image updated. ✅")
     return redirect(url_for("admin"))
 
@@ -1448,7 +1871,7 @@ def upload_hero_image():
     if not require_admin():
         return redirect(url_for("login"))
     up = request.files.get("image")
-    fname, err = handle_image_upload(up, MEDIA_HERO, rename_to=None)
+    fname, err = handle_image_upload(up, MEDIA_HERO, rename_to=None, supabase_bucket=BUCKET_MAP.get("media"), supabase_prefix="hero/")
     if err:
         flash(err)
         return redirect(url_for("admin"))
@@ -1458,6 +1881,19 @@ def upload_hero_image():
                 os.remove(os.path.join(MEDIA_HERO, f))
             except OSError:
                 pass
+    # remove remote hero files except current
+    if SUPABASE_ENABLED:
+        try:
+            remote_files = supabase_list_files(BUCKET_MAP["media"], "hero")
+            for rf in remote_files:
+                if "/" in rf:
+                    rf_name = rf.split("/", 1)[1]
+                else:
+                    rf_name = rf
+                if rf_name != fname:
+                    supabase_delete_file(BUCKET_MAP["media"], f"hero/{rf_name}")
+        except Exception:
+            pass
     flash("Hero background updated. ✅")
     return redirect(url_for("admin"))
 
@@ -1476,8 +1912,16 @@ def upload_gallery():
         ext = up.filename.rsplit(".", 1)[-1].lower() if "." in up.filename else ""
         if ext in IMAGE_EXTS or ext in VIDEO_EXTS:
             fname = (datetime.now().strftime("%Y%m%d_%H%M%S_") + secure_filename(up.filename))
-            up.save(os.path.join(MEDIA_GALLERY, fname))
+            local_path = os.path.join(MEDIA_GALLERY, fname)
+            up.save(local_path)
             uploaded += 1
+            # upload to Supabase gallery prefix
+            if SUPABASE_ENABLED:
+                try:
+                    with open(local_path, "rb") as f:
+                        supabase.storage.from_(BUCKET_MAP["media"]).upload(f"gallery/{fname}", f, {"upsert": True})
+                except Exception as e:
+                    print("⚠️ Supabase gallery upload error:", e)
     if uploaded:
         flash(f"Uploaded {uploaded} item(s) to gallery. ✅")
     else:
@@ -1498,6 +1942,9 @@ def delete_gallery_image(filename):
             flash("Could not delete media.")
     else:
         flash("Media not found.")
+    # delete remote as well
+    if SUPABASE_ENABLED:
+        supabase_delete_file(BUCKET_MAP["media"], f"gallery/{fname}")
     return redirect(url_for("admin"))
 
 # ====== BLOG (admin create/delete) ======
@@ -1523,21 +1970,6 @@ def admin_delete_blog(bid):
     return redirect(url_for("admin"))
 
 # ====== ERROR HANDLERS (Phase 1) ======
-@app.errorhandler(404)
-def page_not_found(e):
-    PAGE_404 = """
-    <!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-      <title>404 Not Found</title>
-      <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
-    </head><body style="background:#0b1220;color:#e6eef8">
-      <div class="container py-5 text-center">
-        <h1>404 — Page not found</h1>
-        <p>The page you're looking for doesn't exist.</p>
-        <a class="btn btn-outline-secondary" href="{{ url_for('index') }}">Back to home</a>
-      </div>
-    </body></html>
-    """
-    return render_template_string(PAGE_404), 404
 
 @app.errorhandler(500)
 def server_error(e):
