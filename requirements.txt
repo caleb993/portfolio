@@ -1,5 +1,9 @@
 flask
+werkzeug
 gunicorn
-supabase
+Flask
+SQLAlchemy
+PyMySQL
 python-dotenv
-requests
+psycopg2-binary
+

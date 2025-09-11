@@ -1,176 +1,47 @@
 # app.py
+import os
+import io
+import math
+import secrets
+import urllib.parse
+from datetime import datetime, timedelta
+from collections import Counter
+
+
+import data
+
+# Run table creation once at startup
+if __name__ == "__main__":
+    print("🔄 Creating tables...")
+    data.create_tables()
+    print("✅ Tables ready!")
+
+
 from flask import (
-    Flask, render_template_string, request, redirect, url_for,
-    send_from_directory, flash, abort, session, jsonify, Response
+    Flask, render_template, request, redirect, url_for,
+    send_file, flash, abort, session, jsonify, Response
 )
 from werkzeug.utils import secure_filename
-import os
-from datetime import datetime, timedelta
-import csv
-import secrets
-import shutil
-import math
-import urllib.parse
-import re
-import json
-from collections import Counter, defaultdict
-
-# Load environment variables safely
 from dotenv import load_dotenv
+
+import data  # our DB layer
+
 load_dotenv()
 
-# Optional Supabase client
-try:
-    from supabase import create_client
-except Exception:
-    create_client = None
+app = Flask(__name__)
+app.secret_key = os.environ.get("FLASK_SECRET_KEY", secrets.token_hex(16))
 
 # ====== CONFIG ======
-ADMIN_KEY = os.environ.get("ADMIN_KEY", "calebadmin")  # update in env for production
-BASE_DIR = os.path.abspath(os.path.dirname(__file__))
-DATA_DIR = os.path.join(BASE_DIR, "data")
+ADMIN_KEY = os.environ.get("ADMIN_KEY", "calebadmin")
 
-# Existing file areas (local)
-UPLOAD_DIR_APPROVED = os.path.join(BASE_DIR, "uploads_projects")
-UPLOAD_DIR_PENDING = os.path.join(BASE_DIR, "uploads_pending")
-UPLOAD_DIR_CV = os.path.join(BASE_DIR, "uploads_cv")
-
-# Media areas (local)
-MEDIA_DIR = os.path.join(BASE_DIR, "media")
-MEDIA_PROFILE = os.path.join(MEDIA_DIR, "profile")
-MEDIA_HERO = os.path.join(MEDIA_DIR, "hero")
-MEDIA_GALLERY = os.path.join(MEDIA_DIR, "gallery")
-
-# Blog storage
-BLOG_DIR = os.path.join(DATA_DIR, "blog")
-BLOG_CSV = os.path.join(BLOG_DIR, "blogs.csv")
-
-# Newsletter subscribers CSV
-NEWSLETTER_CSV = os.path.join(DATA_DIR, "newsletter.csv")
-NEWSLETTER_FIELDS = ["timestamp", "email"]
-
-# Create local directories if missing (preserve earlier logic)
-os.makedirs(DATA_DIR, exist_ok=True)
-os.makedirs(UPLOAD_DIR_APPROVED, exist_ok=True)
-os.makedirs(UPLOAD_DIR_PENDING, exist_ok=True)
-os.makedirs(UPLOAD_DIR_CV, exist_ok=True)
-os.makedirs(MEDIA_DIR, exist_ok=True)
-os.makedirs(MEDIA_PROFILE, exist_ok=True)
-os.makedirs(MEDIA_HERO, exist_ok=True)
-os.makedirs(MEDIA_GALLERY, exist_ok=True)
-os.makedirs(BLOG_DIR, exist_ok=True)
-
-# allowed extensions
+# allowed extensions (includes common video types for gallery)
 ALLOWED_EXTS = {"pdf", "doc", "docx", "png", "jpg", "jpeg", "zip", "txt", "ppt", "pptx", "webp", "gif", "mp4", "webm", "ogg", "mov", "m4v"}
 IMAGE_EXTS = {"png", "jpg", "jpeg", "webp", "gif"}
 VIDEO_EXTS = {"mp4", "webm", "ogg", "mov", "m4v"}
-MAX_CONTENT_LENGTH = 32 * 1024 * 1024  # 32 MB
+app.config["MAX_CONTENT_LENGTH"] = 32 * 1024 * 1024  # 32 MB
 
-# CSV files
-MESSAGES_CSV = os.path.join(DATA_DIR, "messages.csv")
-MSG_FIELDNAMES = ["timestamp", "name", "email", "message", "status"]
-BLOG_FIELDNAMES = ["id", "timestamp", "title", "slug", "content"]
-
-# Flask app
-app = Flask(__name__)
-app.secret_key = os.environ.get("SECRET_KEY", secrets.token_hex(16))
-app.config["MAX_CONTENT_LENGTH"] = MAX_CONTENT_LENGTH
-
-# ====== Supabase configuration (optional) ======
-SUPABASE_URL = os.environ.get("SUPABASE_URL")  # e.g. https://<project>.supabase.co
-SUPABASE_KEY = os.environ.get("SUPABASE_KEY")  # service_role or anon (keep secret)
-SUPABASE_ENABLED = False
-supabase = None
-
-if create_client and SUPABASE_URL and SUPABASE_KEY:
-    try:
-        supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
-        SUPABASE_ENABLED = True
-        print("🔗 Supabase enabled.")
-    except Exception as e:
-        supabase = None
-        SUPABASE_ENABLED = False
-        print("⚠️ Supabase initialization failed:", e)
-else:
-    if not create_client:
-        print("⚠️ supabase client not installed; continuing without Supabase.")
-    else:
-        print("⚠️ SUPABASE_URL or SUPABASE_KEY not set; continuing without Supabase.")
-
-# Map local folders to Supabase buckets / prefixes (you said you created these)
-# We store files in Supabase with the same logical layout:
-# - bucket 'data'              -> paths like 'messages.csv', 'blog/blogs.csv', 'site.db'
-# - bucket 'media'             -> paths like 'gallery/<file>', 'profile/<file>', 'hero/<file>'
-# - bucket 'uploads_cv'        -> root CV files
-# - bucket 'uploads_projects'  -> approved projects
-# - bucket 'uploads_pending'   -> pending uploads
-# - bucket 'uploads_photo'     -> photos (if used)
-BUCKET_MAP = {
-    "data": "data",
-    "media": "media",
-    "uploads_cv": "uploads_cv",
-    "uploads_projects": "uploads_projects",
-    "uploads_photo": "uploads_photo",
-    "uploads_pending": "uploads_pending",
-}
-
-# Helpers for Supabase operations (safe wrappers)
-def supabase_public_url(bucket: str, path: str) -> str:
-    """Return the public storage URL for a given bucket/path (works if bucket is public)."""
-    if not SUPABASE_URL:
-        return ""
-    # ensure path is URL-encoded but keep slashes
-    quoted = "/".join(urllib.parse.quote(p) for p in path.split("/"))
-    return f"{SUPABASE_URL.rstrip('/')}/storage/v1/object/public/{bucket}/{quoted}"
-
-def supabase_upload_file(bucket: str, remote_path: str, local_file_path: str) -> bool:
-    """Upload a local file to Supabase storage under bucket/remote_path. Returns True on success."""
-    if not SUPABASE_ENABLED:
-        return False
-    try:
-        with open(local_file_path, "rb") as f:
-            # The supabase python client accepts a file-like object here
-            supabase.storage.from_(bucket).upload(remote_path, f, {"upsert": True})
-        return True
-    except Exception as e:
-        print(f"❌ Supabase upload failed: {bucket}/{remote_path} | {e}")
-        return False
-
-def supabase_delete_file(bucket: str, remote_path: str) -> bool:
-    """Delete a file in Supabase storage. Returns True on success or if file not present."""
-    if not SUPABASE_ENABLED:
-        return False
-    try:
-        # remove expects a list of paths
-        supabase.storage.from_(bucket).remove([remote_path])
-        return True
-    except Exception as e:
-        # If remove fails, print & continue
-        print(f"❌ Supabase delete failed: {bucket}/{remote_path} | {e}")
-        return False
-
-def supabase_list_files(bucket: str, prefix: str = "") -> list:
-    """
-    List files in a Supabase bucket. Returns a list of file paths (strings).
-    If bucket is not available, returns [].
-    """
-    if not SUPABASE_ENABLED:
-        return []
-    try:
-        items = supabase.storage.from_(bucket).list(prefix)
-        out = []
-        for it in items:
-            # If item has 'id' None it's a folder; else it's file
-            # The 'name' returned is the item name (not full path) - if you used prefix, we can join
-            if it.get("id") is None:
-                # folder entry - list its children recursively
-                # but here we just skip folders (client.list with prefix can return folder and file items)
-                continue
-            out.append(it.get("name"))
-        return out
-    except Exception as e:
-        print(f"❌ Supabase list failed for {bucket}/{prefix} | {e}")
-        return []
+# Initialize DB tables (idempotent)
+data.create_tables()
 
 # ====== HELPERS ======
 def allowed_file(filename: str) -> bool:
@@ -182,830 +53,64 @@ def allowed_image(filename: str) -> bool:
 def allowed_video(filename: str) -> bool:
     return "." in filename and filename.rsplit(".", 1)[1].lower() in VIDEO_EXTS
 
-def save_message(name: str, email: str, message: str) -> None:
-    newfile = not os.path.exists(MESSAGES_CSV)
-    with open(MESSAGES_CSV, "a", newline="", encoding="utf-8") as f:
-        w = csv.writer(f)
-        if newfile:
-            w.writerow(MSG_FIELDNAMES)
-        w.writerow([datetime.now().isoformat(timespec="seconds"), name.strip(), email.strip(), message.strip(), "unread"])
-
-def load_messages():
-    msgs = []
-    if os.path.exists(MESSAGES_CSV):
-        with open(MESSAGES_CSV, newline="", encoding="utf-8") as f:
-            reader = csv.DictReader(f)
-            for row in reader:
-                entry = {k: (row.get(k, "") if k in row else "") for k in MSG_FIELDNAMES}
-                if not entry.get("status"):
-                    entry["status"] = "unread"
-                msgs.append(entry)
-    return msgs
-
-def save_all_messages(msgs):
-    if not msgs:
-        try:
-            if os.path.exists(MESSAGES_CSV):
-                os.remove(MESSAGES_CSV)
-        except OSError:
-            pass
-        return
-    with open(MESSAGES_CSV, "w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=MSG_FIELDNAMES)
-        writer.writeheader()
-        for r in msgs:
-            out = {k: r.get(k, "") for k in MSG_FIELDNAMES}
-            writer.writerow(out)
-
-def list_projects():
-    """
-    Return list of approved project filenames.
-    Priority: local directory if present; else Supabase bucket 'uploads_projects' if enabled.
-    """
-    try:
-        if os.path.exists(UPLOAD_DIR_APPROVED):
-            return sorted([f for f in os.listdir(UPLOAD_DIR_APPROVED) if os.path.isfile(os.path.join(UPLOAD_DIR_APPROVED, f))])
-    except FileNotFoundError:
-        pass
-
-    # fallback to Supabase listing
-    if SUPABASE_ENABLED:
-        try:
-            names = supabase_list_files(BUCKET_MAP["uploads_projects"], "")
-            # supabase_list_files returns item names (not full path) when listing at root
-            return sorted(names)
-        except Exception:
-            return []
-    return []
-
-def list_pending():
-    """
-    Return list of pending (unapproved) filenames.
-    Priority: local pending folder; else Supabase.
-    """
-    try:
-        if os.path.exists(UPLOAD_DIR_PENDING):
-            return sorted([f for f in os.listdir(UPLOAD_DIR_PENDING) if os.path.isfile(os.path.join(UPLOAD_DIR_PENDING, f))])
-    except FileNotFoundError:
-        pass
-
-    if SUPABASE_ENABLED:
-        return sorted(supabase_list_files(BUCKET_MAP["uploads_pending"], ""))
-    return []
-
-def owner_cv_filename():
-    """
-    Return the owner's CV filename (first found). Local preferred.
-    """
-    try:
-        files = sorted([f for f in os.listdir(UPLOAD_DIR_CV) if os.path.isfile(os.path.join(UPLOAD_DIR_CV, f))])
-        if files:
-            return files[0]
-    except FileNotFoundError:
-        pass
-
-    # Try Supabase bucket
-    if SUPABASE_ENABLED:
-        try:
-            names = supabase_list_files(BUCKET_MAP["uploads_cv"], "")
-            if names:
-                return sorted(names)[0]
-        except Exception:
-            pass
-    return None
-
-def handle_upload(up, folder, rename_to=None, supabase_bucket=None, supabase_prefix=""):
-    """
-    Save uploaded file locally and optionally upload to Supabase.
-    Returns (filename, error_message)
-    """
-    if not up or up.filename == "":
-        return None, "No file selected."
-    if not allowed_file(up.filename):
-        return None, "Invalid file type."
-    fname = rename_to or (datetime.now().strftime("%Y%m%d_%H%M%S_") + secure_filename(up.filename))
-    local_path = os.path.join(folder, fname)
-    up.save(local_path)
-
-    # upload to supabase if configured
-    if SUPABASE_ENABLED and supabase_bucket:
-        remote_path = (supabase_prefix + fname).lstrip("/")
-        try:
-            with open(local_path, "rb") as f:
-                supabase.storage.from_(supabase_bucket).upload(remote_path, f, {"upsert": True})
-        except Exception as e:
-            print(f"❌ Supabase upload (handle_upload) failed for {remote_path}: {e}")
-            # not fatal; continue
-    return fname, None
-
-def handle_image_upload(up, folder, rename_to=None, supabase_bucket=None, supabase_prefix=""):
-    """
-    Save image locally and optionally upload to Supabase. Similar to handle_upload.
-    """
-    if not up or up.filename == "":
-        return None, "No image selected."
-    if not allowed_image(up.filename):
-        return None, "Invalid image type."
-    fname = rename_to or (datetime.now().strftime("%Y%m%d_%H%M%S_") + secure_filename(up.filename))
-    local_path = os.path.join(folder, fname)
-    up.save(local_path)
-
-    # upload to supabase if needed
-    if SUPABASE_ENABLED and supabase_bucket:
-        remote_path = (supabase_prefix + fname).lstrip("/")
-        try:
-            with open(local_path, "rb") as f:
-                supabase.storage.from_(supabase_bucket).upload(remote_path, f, {"upsert": True})
-        except Exception as e:
-            print(f"❌ Supabase upload (handle_image_upload) failed for {remote_path}: {e}")
-    return fname, None
-
 def require_admin():
-    """
-    Check if session indicates admin access (keeps your original behavior).
-    """
     if not session.get("is_admin"):
         flash("Please log in as admin.")
         return False
     return True
 
-def latest_file(folder, only_images=False):
-    try:
-        entries = []
-        for f in os.listdir(folder):
-            if only_images and not allowed_image(f):
-                continue
-            p = os.path.join(folder, f)
-            if os.path.isfile(p):
-                entries.append((f, os.path.getmtime(p)))
-        if not entries:
-            return None, None
-        entries.sort(key=lambda x: x[1], reverse=True)
-        return entries[0]
-    except FileNotFoundError:
+def latest_file(category, only_images=False):
+    """
+    Return (filename, uploaded_at_epoch) or (None, None)
+    category: 'profile','hero','gallery','cv',...
+    """
+    rec = data.get_latest_file_record(category, only_images=only_images)
+    if not rec:
         return None, None
+    # rec: {"name":..., "uploaded_at": datetime, "mimetype":...}
+    ts = int(rec["uploaded_at"].timestamp()) if rec.get("uploaded_at") else 0
+    return rec.get("name"), ts
 
-def list_images(folder):
-    """Return only image filenames in folder, newest-first (local only)."""
-    try:
-        imgs = [f for f in os.listdir(folder) if allowed_image(f)]
-        imgs.sort(key=lambda n: os.path.getmtime(os.path.join(folder, n)), reverse=True)
-        return imgs
-    except FileNotFoundError:
-        return []
+def owner_cv_filename():
+    return data.get_latest_filename('cv')
+
+def list_projects():
+    return data.list_projects(approved=True)
+
+def list_pending():
+    return data.list_projects(approved=False)
+
+def list_gallery_media():
+    """
+    Return list of {name,type,url} newest-first
+    """
+    items = data.list_gallery_media()
+    # items already include 'url' from data layer
+    return items
 
 def media_url(kind, filename):
-    """
-    Build media URL for profile/hero/gallery.
-    If file available locally, serve via media_file; else, if Supabase enabled, return public Supabase URL.
-    """
     if not filename:
         return None
-    folder = MEDIA_PROFILE if kind == "profile" else MEDIA_HERO if kind == "hero" else MEDIA_GALLERY
-    path = os.path.join(folder, filename)
-    if os.path.exists(path):
-        v = int(os.path.getmtime(path))
-        return url_for("media_file", kind=kind, filename=filename) + f"?v={v}"
-    # fallback to Supabase public URL
-    if SUPABASE_ENABLED:
-        remote_path = f"{kind}/{filename}"
-        return supabase_public_url(BUCKET_MAP["media"], remote_path) + f"?v=0"
-    return None
-
-def slugify(text: str) -> str:
-    s = text.lower().strip()
-    s = re.sub(r"[^\w\s-]", "", s)
-    s = re.sub(r"[-\s]+", "-", s)
-    return s[:200]
-
-# ====== BLOG HELPERS ======
-def load_blogs():
-    blogs = []
-    if os.path.exists(BLOG_CSV):
-        with open(BLOG_CSV, newline="", encoding="utf-8") as f:
-            reader = csv.DictReader(f)
-            for row in reader:
-                blogs.append(row)
-    else:
-        # If local CSV missing but Supabase enabled, try to fetch blog CSV from Supabase
-        if SUPABASE_ENABLED:
-            try:
-                bucket = BUCKET_MAP["data"]
-                # try to list and download 'blog/blogs.csv' via public URL
-                remote_path = "blog/blogs.csv"
-                public = supabase_public_url(bucket, remote_path)
-                # if the public url is available, we can attempt to request it (optional: avoid external requests)
-                # For simplicity here, we skip auto-download to keep logic predictable.
-            except Exception:
-                pass
-    return blogs
-
-def save_all_blogs(blogs):
-    if not blogs:
-        try:
-            if os.path.exists(BLOG_CSV):
-                os.remove(BLOG_CSV)
-        except OSError:
-            pass
-        return
-    with open(BLOG_CSV, "w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=BLOG_FIELDNAMES)
-        writer.writeheader()
-        for b in blogs:
-            writer.writerow({k: b.get(k, "") for k in BLOG_FIELDNAMES})
-
-def add_blog(title, content):
-    blogs = load_blogs()
-    nid = 1
-    if blogs:
-        try:
-            nid = max(int(b.get("id", 0)) for b in blogs) + 1
-        except Exception:
-            nid = len(blogs) + 1
-    slug = slugify(title) or f"post-{nid}"
-    b = {
-        "id": str(nid),
-        "timestamp": datetime.now().isoformat(timespec="seconds"),
-        "title": title.strip(),
-        "slug": slug,
-        "content": content.strip()
-    }
-    blogs.insert(0, b)  # newest first
-    save_all_blogs(blogs)
-    return b
-
-def delete_blog_by_id(bid):
-    blogs = load_blogs()
-    remaining = [b for b in blogs if b.get("id") != str(bid)]
-    save_all_blogs(remaining)
-
-# ====== NEWSLETTER HELPERS ======
-def save_subscriber(email: str) -> None:
-    newfile = not os.path.exists(NEWSLETTER_CSV)
-    with open(NEWSLETTER_CSV, "a", newline="", encoding="utf-8") as f:
-        w = csv.writer(f)
-        if newfile:
-            w.writerow(NEWSLETTER_FIELDS)
-        w.writerow([datetime.now().isoformat(timespec="seconds"), email.strip().lower()])
-
-def load_subscribers():
-    subs = []
-    if os.path.exists(NEWSLETTER_CSV):
-        with open(NEWSLETTER_CSV, newline="", encoding="utf-8") as f:
-            reader = csv.DictReader(f)
-            for row in reader:
-                subs.append(row)
-    return subs
-
-# ====== PAGE TEMPLATE (unchanged content kept) ======
-PAGE = """<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Muga • Portfolio — Caleb Muga</title>
-
-  <!-- SEO / OpenGraph -->
-  <meta name="google-site-verification" content="xN8zzUOK3ngMEFkP7XrSySJp_i9oCxQLBeWPBc0QHQE" />
-  <meta name="description" content="TechKnow Solutions — Caleb Muga: ICT Support, Networking, Cybersecurity, and process automation. Contact for services and view portfolio.">
-  <meta name="author" content="Caleb Muga">
-  <meta property="og:title" content="TechKnow Solutions — Caleb Muga">
-  <meta property="og:description" content="ICT Support, Networking, Cybersecurity and automation solutions.">
-  <meta property="og:type" content="website">
-  <meta property="og:site_name" content="TechKnow Solutions">
-  {% if hero_url %}
-  <meta property="og:image" content="{{ hero_url }}">
-  {% endif %}
-  <meta name="twitter:card" content="summary_large_image">
-
-  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;800&display=swap" rel="stylesheet">
-  <style>
-    :root{ --brand1:#0d6efd; --brand2:#6f42c1; --muted:#6b7280; }
-    * { box-sizing: border-box; }
-    body{
-      font-family: 'Inter', system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
-      background:#0b1220; color:#e6eef8; min-height:100vh; display:flex; flex-direction:column; overflow-x:hidden;
-      transition: background .25s, color .25s;
-    }
-    /* LIGHT MODE */
-    body.light { background: #f5f7fb; color: #0b1220; }
-    .navbar{ font-size:1.05rem; backdrop-filter: saturate(160%) blur(6px); }
-    .brand-avatar{ display:flex; align-items:center; gap:10px; text-decoration:none; font-weight:800; letter-spacing:.2px; }
-    .brand-avatar img{ width:38px; height:38px; border-radius:50%; object-fit:cover; box-shadow:0 0 0 3px rgba(255,255,255,.15); }
-    .brand-avatar span { color:#e5e7eb; }
-    body.light .brand-avatar span { color: #0b1220; }
-    .hero{ position:relative; color:#fff; padding:140px 24px 120px; text-align:center; border-bottom-left-radius:24px; border-bottom-right-radius:24px; overflow:hidden; }
-    body.light .hero{ color:#0b1220; }
-    .hero .overlay { position:absolute; inset:0; z-index:0; opacity:.28; background-size:cover; background-position:center; filter:saturate(120%) contrast(105%); }
-    .hero h1{ position:relative; z-index:1; font-weight:800; font-size:3.2rem; letter-spacing:.3px; }
-    .hero p{ position:relative; z-index:1; font-size:1.25rem; opacity:.95; }
-    .chip{ display:inline-block; background:rgba(255,255,255,.12); padding:.35rem .7rem; border-radius:999px; font-size:.95rem; margin:0 .25rem .5rem; border:1px solid rgba(255,255,255,.2) }
-    body.light .chip { background: rgba(10,10,10,.04); color:#0b1220; border:1px solid rgba(0,0,0,.06); }
-    .floaters span{ position:absolute; width:120px; height:120px; border-radius:50%; background: radial-gradient(circle at 30% 30%, rgba(255,255,255,.12), rgba(255,255,255,.02)); animation: drift 16s ease-in-out infinite; filter: blur(1px); }
-    .floaters span:nth-child(1){ left:5%; top:40%; animation-delay:0s; }
-    .floaters span:nth-child(2){ right:8%; top:20%; animation-delay:2s; width:160px; height:160px; }
-    .floaters span:nth-child(3){ left:20%; bottom:10%; animation-delay:4s; width:90px; height:90px; }
-    .floaters span:nth-child(4){ right:20%; bottom:15%; animation-delay:6s; width:110px; height:110px; }
-    @keyframes drift{ 0%,100%{ transform: translateY(0) translateX(0); } 50%{ transform: translateY(-18px) translateX(8px); } }
-    section{ padding:80px 0; }
-    h2.section-title{ font-weight:800; font-size:2rem; text-align:center; margin-bottom:24px; }
-    .lead-lg{ font-size:1.15rem; color:#d0d8e6; }
-    body.light .lead-lg { color: #374151; }
-    .card{ border:0; border-radius:18px; background:#0f1724; box-shadow:0 8px 24px rgba(0,0,0,.55); color:#e6eef8; }
-    body.light .card { background: #fff; color: #0b1220; box-shadow: 0 6px 18px rgba(0,0,0,.06); }
-    .form-control, .form-select{ background:#0c1426; border:1px solid #1d2b4a; color:#dbe6ff; border-radius:12px; }
-    body.light .form-control, body.light .form-select { background: #fff; color:#0b1220; border:1px solid #e6eef8; }
-    .btn-primary{ background:linear-gradient(135deg, var(--brand1), var(--brand2)); border:0; }
-    .gallery-grid{ display:grid; grid-template-columns: repeat(auto-fill, minmax(220px,1fr)); gap:14px; }
-    .gallery-item{ position:relative; border-radius:14px; overflow:hidden; background:#0c1426; cursor:pointer; display:flex; align-items:center; justify-content:center; height:180px; }
-    .gallery-item img, .gallery-item video{ width:100%; height:100%; object-fit:cover; transition: transform .4s ease; display:block; }
-    .gallery-item:hover img, .gallery-item:hover video{ transform: scale(1.05); }
-    .video-overlay { position:absolute; z-index:5; display:flex; align-items:center; justify-content:center; pointer-events:none; }
-    .video-play-icon { width:56px; height:56px; background: rgba(0,0,0,0.45); border-radius:50%; display:flex; align-items:center; justify-content:center; }
-    .video-play-icon:after{ content:""; border-style:solid; border-width:10px 0 10px 16px; border-color: transparent transparent transparent #fff; margin-left:4px; display:inline-block; }
-    .reveal{ opacity:0; transform: translateY(18px); transition: all .7s ease; }
-    .reveal.visible{ opacity:1; transform: translateY(0); }
-    #loader{ position:fixed; inset:0; display:flex; align-items:center; justify-content:center; background:#0b1220; z-index:9999; }
-    .spinner{ width:56px; height:56px; border-radius:50%; border:6px solid rgba(255,255,255,.15); border-top-color:#8aa4ff; animation:spin 1s linear infinite; }
-    @keyframes spin{ to{ transform: rotate(360deg); } }
-    .blog-card { padding:18px; border-radius:12px; background: rgba(255,255,255,0.02); }
-    body.light .blog-card { background: #fff; border:1px solid #eef2ff; }
-    .top-right-controls { display:flex; gap:8px; align-items:center; }
-    .dark-toggle { cursor:pointer; border-radius:999px; padding:.35rem .6rem; background: rgba(255,255,255,.04); border:1px solid rgba(255,255,255,.06); color:inherit; }
-    body.light .dark-toggle { background: rgba(0,0,0,.03); }
-    /* small responsive tweak for video thumbnails */
-    @media (max-width:576px){ .gallery-item { height:140px; } }
-  </style>
-</head>
-<body>
-
-<div id="loader" role="status" aria-hidden="false"><div class="spinner" aria-hidden="true"></div></div>
-
-<nav class="navbar navbar-expand-lg bg-transparent sticky-top" role="navigation" aria-label="Main navigation">
-  <div class="container">
-    <a class="brand-avatar" href="#home" aria-label="Go to home">
-      {% if profile_url %}
-        <img src="{{ profile_url }}" alt="profile">
-        <span>Muga.dev</span>
-      {% else %}
-        <span class="fs-5">Muga<span style="color:#8aa4ff">.dev</span></span>
-      {% endif %}
-    </a>
-
-    <div class="top-right-controls ms-auto d-flex align-items-center">
-      <button id="themeBtn" class="dark-toggle" title="Toggle light / dark" aria-pressed="false">Toggle theme</button>
-      <a class="btn btn-sm btn-outline-primary ms-2" href="{{ url_for('blog_list') }}">Blog</a>
-      <a class="btn btn-sm btn-outline-secondary ms-2" href="{{ url_for('login') }}">Admin</a>
-    </div>
-  </div>
-</nav>
-
-<header id="home" class="hero" role="banner">
-  {% if hero_url %}
-    <div class="overlay" style="background-image: url('{{ hero_url }}');" aria-hidden="true"></div>
-  {% endif %}
-  <div class="floaters" aria-hidden="true">
-    <span></span><span></span><span></span><span></span>
-  </div>
-  <div class="container position-relative">
-    <h1 class="reveal">Hey, WELCOME TO TECHKNOW SOLUTIONS - Caleb Muga 👋</h1>
-    <p class="mt-3 reveal" style="max-width:900px;margin:0 auto;">
-      <span class="chip" aria-hidden="true">ICT Support</span>
-      <span class="chip" aria-hidden="true">Networking</span>
-      <span class="chip" aria-hidden="true">Cybersecurity</span>
-      <span class="chip" aria-hidden="true">Process Automation</span>
-    </p>
-    <a href="#portfolio" class="btn btn-primary btn-lg mt-4 reveal">See My Work</a>
-  </div>
-</header>
-
-<main class="container flex-grow-1" role="main">
-  {% with msgs=get_flashed_messages() %}
-    {% if msgs %}
-      <div class="mt-4" aria-live="polite">
-        {% for m in msgs %}
-          <div class="alert alert-info">{{ m }}</div>
-        {% endfor %}
-      </div>
-    {% endif %}
-  {% endwith %}
-
-  <!-- About -->
-  <section id="about" class="reveal" aria-labelledby="about-title">
-    <h2 class="section-title" id="about-title">About Me</h2>
-    <div class="card p-4 mx-auto" style="max-width:1000px">
-      <div class="row g-4">
-        <div class="col-md-4 text-center">
-          {% if profile_url %}
-            <img src="{{ profile_url }}" style="width:160px;height:160px;object-fit:cover;border-radius:12px;" alt="Profile image of Caleb Muga">
-          {% else %}
-            <div style="width:160px;height:160px;border-radius:12px;display:flex;align-items:center;justify-content:center;background:#0c1426;font-weight:700;font-size:28px;" aria-hidden="true">
-              CM
-            </div>
-          {% endif %}
-        </div>
-        <div class="col-md-8">
-          <p class="lead-lg">
-            Customer-focused ICT Officer with a BSc in Business & IT. Practical experience in network administration, end-user support,
-            and cybersecurity. I build reliable tools and automate repetitive tasks to increase efficiency.
-          </p>
-          <ul>
-            <li><strong>Strengths:</strong> Problem-solving, documentation, stakeholder communication, systems hardening.</li>
-            <li><strong>Certifications:</strong> CCNA 1,OPSWAT File Security Associate, ALX Virtual Assistant.</li>
-            <li><strong>Languages:</strong> English, Swahili.</li>
-          </ul>
-          {% if cv_file %}
-            <a href="{{ url_for('download_file', kind='cv', filename=cv_file) }}" class="btn btn-outline-primary">Download CV</a>
-          {% endif %}
-        </div>
-      </div>
-    </div>
-  </section>
-
-  <!-- Portfolio / Gallery -->
-  <section id="portfolio" class="reveal" aria-labelledby="portfolio-title">
-    <h2 class="section-title" id="portfolio-title">Portfolio & Gallery</h2>
-    <p class="text-center lead-lg">Featured gallery and private project submission.</p>
-
-    <div class="card p-3 mb-4" aria-live="polite">
-      <h5 class="mb-3">Featured Gallery ({{ gallery_images|length }})</h5>
-      {% if gallery_images %}
-        <div class="gallery-grid">
-          {% for g in gallery_images %}
-            <div class="gallery-item" onclick="openGalleryItem({{ loop.index0 }})" role="button" tabindex="0" aria-label="Open gallery item {{ loop.index }}">
-              {% if g.type == 'image' %}
-                <img src="{{ g.url }}" alt="Gallery image {{ loop.index }}">
-              {% elif g.type == 'video' %}
-                <video muted playsinline preload="metadata" aria-hidden="true">
-                  <source src="{{ g.url }}">
-                </video>
-                <div class="video-overlay" aria-hidden="true"><div class="video-play-icon"></div></div>
-              {% else %}
-                <img src="{{ g.url }}" alt="Gallery {{ loop.index }}">
-              {% endif %}
-            </div>
-          {% endfor %}
-        </div>
-      {% else %}
-        <p class="text-muted mb-0">Gallery is empty. (Admin can add photos or videos in the Admin Panel.)</p>
-      {% endif %}
-    </div>
-
-    <div class="card">
-      <div class="card-body">
-        <h5 class="card-title">Submit Your Project (Private)</h5>
-        <p class="text-muted mb-2">Your file is uploaded privately and only the admin can view/approve it.</p>
-        <form method="post" enctype="multipart/form-data" action="{{ url_for('upload_project') }}">
-          <input type="file" name="file" class="form-control mb-2" required aria-label="Choose file to upload">
-          <button class="btn btn-primary">Upload</button>
-        </form>
-        <small class="text-muted d-block mt-2">Allowed: {{ allowed_exts|join(', ') }} • up to 32MB</small>
-      </div>
-    </div>
-  </section>
-
-  <!-- Newsletter (Phase 1 addition) -->
-  <section id="newsletter" class="reveal" aria-labelledby="newsletter-title">
-    <h2 class="section-title" id="newsletter-title">Stay Updated</h2>
-    <p class="text-center lead-lg">Subscribe to occasional updates and new blog posts.</p>
-    <div class="card p-3 mx-auto" style="max-width:720px">
-      <form method="post" action="{{ url_for('subscribe') }}" class="d-flex gap-2 align-items-center" aria-label="Subscribe to newsletter">
-        <label for="sub-email" class="visually-hidden">Email address</label>
-        <input id="sub-email" type="email" name="email" class="form-control" placeholder="Email address" required>
-        <button class="btn btn-primary">Subscribe</button>
-      </form>
-      <div class="small text-muted mt-2">No spam. Unsubscribe anytime by contacting admin.</div>
-    </div>
-  </section>
-
-  <!-- Services -->
-  <section id="services" class="reveal">
-    <h2 class="section-title">Services</h2>
-    <div class="row g-4">
-      <div class="col-md-4">
-        <div class="card h-100 p-3">
-          <h5>Network Administration</h5>
-          <p class="mb-0">Design, deploy and maintain reliable networks (LAN/WAN, switches, routers, VPNs).</p>
-        </div>
-      </div>
-      <div class="col-md-4">
-        <div class="card h-100 p-3">
-          <h5>Cybersecurity</h5>
-          <p class="mb-0">Vulnerability scanning, hardening, access control and incident response support.</p>
-        </div>
-      </div>
-      <div class="col-md-4">
-        <div class="card h-100 p-3">
-          <h5>Automation & Data Solutions</h5>
-          <p class="mb-0">Dashboards, scripts and small automations that save time and reduce errors.</p>
-        </div>
-      </div>
-    </div>
-  </section>
-
-  <!-- Blog preview -->
-  <section id="blog" class="reveal">
-    <h2 class="section-title">Latest from my blog</h2>
-    <div class="row g-4">
-      {% if blog_posts %}
-        {% for b in blog_posts[:3] %}
-          <div class="col-md-4">
-            <div class="blog-card">
-              <h5>{{ b.title }}</h5>
-              <div class="text-muted" style="font-size:.9rem">{{ b.timestamp }}</div>
-              <p style="margin-top:.6rem; color:inherit;">{{ b.content[:180] }}{% if b.content|length > 180 %}...{% endif %}</p>
-              <a class="btn btn-sm btn-outline-primary" href="{{ url_for('view_blog', slug=b.slug) }}">Read</a>
-            </div>
-          </div>
-        {% endfor %}
-      {% else %}
-        <div class="col-12"><p class="text-muted">No blog posts yet. (Admin can add posts.)</p></div>
-      {% endif %}
-    </div>
-    <div class="text-center mt-3"><a class="btn btn-outline-secondary" href="{{ url_for('blog_list') }}">See all posts</a></div>
-  </section>
-
-  <!-- Contact -->
-  <section id="contact" class="reveal">
-    <h2 class="section-title">Contact</h2>
-    <div class="row g-4">
-      <div class="col-lg-6">
-        <div class="card h-100">
-          <div class="card-body">
-            <h5 class="card-title">Send a Message</h5>
-            <form method="post" action="{{ url_for('contact') }}">
-              <input type="text" name="name" class="form-control mb-2" placeholder="Your name" required>
-              <input type="email" name="email" class="form-control mb-2" placeholder="Your email" required>
-              <textarea name="message" class="form-control mb-2" rows="4" placeholder="Your message" required></textarea>
-              <button class="btn btn-primary">Send</button>
-            </form>
-            <small class="text-muted d-block mt-2">Your message is saved privately (admin can view).</small>
-          </div>
-        </div>
-      </div>
-      <div class="col-lg-6">
-        <div class="card h-100">
-          <div class="card-body">
-            <h5 class="card-title">Quick Contacts</h5>
-            <p class="lead mb-1"><strong>Phone:</strong> 0791 204 587</p>
-            <a class="btn btn-whatsapp btn-lg" href="https://wa.me/254791204587" target="_blank" rel="noopener">Chat on WhatsApp</a>
-            <p class="text-muted mt-3 mb-0">Available Mon–Sat. Nairobi time (EAT).</p>
-          </div>
-        </div>
-      </div>
-    </div>
-  </section>
-
-</main>
-
-<footer>
-  <div class="container d-flex flex-wrap justify-content-between align-items-center py-3">
-    <div>© {{ year }} <strong>Caleb Muga</strong>. All rights reserved.</div>
-    <div><a class="text-decoration-none" href="#home">Back to top ↑</a></div>
-  </div>
-</footer>
-
-<!-- Media modal (images & videos) -->
-<div class="modal fade" id="mediaModal" tabindex="-1" aria-hidden="true" aria-labelledby="mediaModalLabel">
-  <div class="modal-dialog modal-dialog-centered modal-xl">
-    <div class="modal-content" style="background:transparent;border:0;">
-      <div class="modal-body p-0">
-        <div id="mediaContainer" style="width:100%;height:auto;border-radius:12px;overflow:hidden;display:flex;align-items:center;justify-content:center;background:transparent;">
-          <!-- JS injects media -->
-        </div>
-      </div>
-    </div>
-  </div>
-</div>
-
-<script>
-  // Loader
-  window.addEventListener('load', () => {
-    const l = document.getElementById('loader');
-    if(l){ l.style.opacity = '0'; setTimeout(() => l.style.display='none', 300); }
-  });
-
-  // Reveal on scroll
-  const io = new IntersectionObserver((entries) => {
-    entries.forEach(e => {
-      if(e.isIntersecting){ e.target.classList.add('visible'); }
-    });
-  }, { threshold:.12 });
-  document.querySelectorAll('.reveal').forEach(el => io.observe(el));
-
-  // Gallery items as array
-  const galleryItems = {{ gallery_images|tojson }};
-
-  function openGalleryItem(idx){
-    if(!galleryItems || idx < 0 || idx >= galleryItems.length) return;
-    const it = galleryItems[idx];
-    const container = document.getElementById('mediaContainer');
-    container.innerHTML = '';
-    if(it.type === 'image'){
-      const img = document.createElement('img');
-      img.src = it.url;
-      img.alt = 'Gallery image';
-      img.style.width = '100%';
-      img.style.height = 'auto';
-      img.style.display = 'block';
-      img.style.borderRadius = '12px';
-      container.appendChild(img);
-    } else if(it.type === 'video'){
-      const vid = document.createElement('video');
-      vid.src = it.url;
-      vid.controls = true;
-      vid.autoplay = false;
-      vid.playsInline = true;
-      vid.style.width = '100%';
-      vid.style.height = 'auto';
-      vid.style.display = 'block';
-      vid.style.borderRadius = '12px';
-      container.appendChild(vid);
-    } else {
-      const a = document.createElement('a');
-      a.href = it.url;
-      a.innerText = 'Open media';
-      a.target = '_blank';
-      container.appendChild(a);
-    }
-    const modalEl = document.getElementById('mediaModal');
-    const modal = new bootstrap.Modal(modalEl);
-    modal.show();
-  }
-
-  // Theme toggle (persist in localStorage)
-  const themeKey = 'muga_theme';
-  const themeBtn = document.getElementById('themeBtn');
-  function applyTheme(t){
-    if(t==='light') {
-      document.body.classList.add('light');
-      themeBtn.setAttribute('aria-pressed', 'true');
-    } else {
-      document.body.classList.remove('light');
-      themeBtn.setAttribute('aria-pressed', 'false');
-    }
-  }
-  function initTheme(){
-    const t = localStorage.getItem(themeKey) || 'dark';
-    applyTheme(t);
-  }
-  initTheme();
-  themeBtn.addEventListener('click', () => {
-    const t = document.body.classList.contains('light') ? 'dark' : 'light';
-    localStorage.setItem(themeKey, t);
-    applyTheme(t);
-  });
-
-  // keyboard accessibility for gallery items (Enter to open)
-  document.addEventListener('keydown', (e) => {
-    if(e.key === 'Enter' && document.activeElement && document.activeElement.classList.contains('gallery-item')){
-      const nodeList = Array.from(document.querySelectorAll('.gallery-item'));
-      const idx = nodeList.indexOf(document.activeElement);
-      if(idx >= 0) openGalleryItem(idx);
-    }
-  });
-</script>
-<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
-</body>
-</html>
-"""
+    # determine category from kind
+    category = "profile" if kind == "profile" else "hero" if kind == "hero" else "gallery"
+    ts = data.get_file_timestamp(category, filename) or 0
+    return url_for("media_file", kind=kind, filename=filename) + f"?v={int(ts)}"
 
 # ====== ROUTES ======
-
-@app.route("/sitemap.xml", methods=["GET"])
-def sitemap():
-    """Generate sitemap dynamically"""
-    pages = []
-
-    # Homepage
-    pages.append({
-        "loc": url_for("index", _external=True),
-        "changefreq": "weekly",
-        "priority": 0.8
-    })
-
-    # Blog list page
-    pages.append({
-        "loc": url_for("blog_list", _external=True),
-        "changefreq": "weekly",
-        "priority": 0.8
-    })
-
-    # Individual blog posts
-    blogs = load_blogs()
-    for blog in blogs:
-        pages.append({
-            "loc": url_for("view_blog", slug=blog.get("slug"), _external=True),
-            "changefreq": "weekly",
-            "priority": 0.8
-        })
-
-    # Portfolio projects
-    projects = list_projects()
-    for fname in projects:
-        pages.append({
-            "loc": url_for("download_file", kind="project", filename=fname, _external=True),
-            "changefreq": "monthly",
-            "priority": 0.6
-        })
-
-    # Gallery images
-    # For small sites this is fine; skip heavy lists
-    gallery_items = []
-    try:
-        # prefer local gallery
-        if os.path.exists(MEDIA_GALLERY):
-            gallery_items = [f for f in os.listdir(MEDIA_GALLERY) if os.path.isfile(os.path.join(MEDIA_GALLERY, f))]
-        elif SUPABASE_ENABLED:
-            gallery_items = supabase_list_files(BUCKET_MAP["media"], "gallery")
-    except Exception:
-        gallery_items = []
-
-    for fname in gallery_items:
-        pages.append({
-            "loc": url_for("media_file", kind="gallery", filename=fname, _external=True),
-            "changefreq": "monthly",
-            "priority": 0.5
-        })
-
-    # Generate XML
-    sitemap_xml = '<?xml version="1.0" encoding="UTF-8"?>\n'
-    sitemap_xml += '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n'
-
-    for page in pages:
-        sitemap_xml += "  <url>\n"
-        sitemap_xml += f"    <loc>{page['loc']}</loc>\n"
-        sitemap_xml += f"    <changefreq>{page['changefreq']}</changefreq>\n"
-        sitemap_xml += f"    <priority>{page['priority']}</priority>\n"
-        sitemap_xml += "  </url>\n"
-
-    sitemap_xml += "</urlset>"
-
-    return Response(sitemap_xml, mimetype="application/xml")
-
 @app.route("/", methods=["GET"])
 def index():
-    prof, _ = latest_file(MEDIA_PROFILE, only_images=True)
-    hero, _ = latest_file(MEDIA_HERO, only_images=True)
+    prof_name, _ = latest_file("profile", only_images=True)
+    hero_name, _ = latest_file("hero", only_images=True)
+    gallery = list_gallery_media()
+    blogs = data.load_blogs()
 
-    # Build gallery - prefer local files; if empty and Supabase enabled, fetch from Supabase
-    gallery = []
-    # Local gallery
-    try:
-        if os.path.exists(MEDIA_GALLERY):
-            entries = []
-            for f in os.listdir(MEDIA_GALLERY):
-                p = os.path.join(MEDIA_GALLERY, f)
-                if not os.path.isfile(p):
-                    continue
-                ext = f.rsplit(".", 1)[-1].lower() if "." in f else ""
-                if ext in IMAGE_EXTS or ext in VIDEO_EXTS:
-                    entries.append((f, os.path.getmtime(p)))
-            entries.sort(key=lambda x: x[1], reverse=True)
-            for fname, _ in entries:
-                typ = "image" if allowed_image(fname) else "video" if allowed_video(fname) else "other"
-                gallery.append({"name": fname, "type": typ, "url": media_url("gallery", fname)})
-    except Exception:
-        gallery = []
-
-    # If gallery empty, attempt Supabase (list 'media' bucket under 'gallery' prefix)
-    if not gallery and SUPABASE_ENABLED:
-        try:
-            items = supabase.storage.from_(BUCKET_MAP["media"]).list("gallery")
-            # items may include folders and files
-            for it in items:
-                if it.get("id") is None:
-                    # skip folder entries
-                    continue
-                name = it.get("name")
-                # name might be e.g. 'gallery/filename' or just 'filename' depending on API - handle both
-                if "/" in name:
-                    # if name is 'gallery/filename'
-                    parts = name.split("/", 1)
-                    if parts[0] == "gallery":
-                        fname = parts[1]
-                    else:
-                        fname = name
-                else:
-                    fname = name
-                ext = fname.rsplit(".", 1)[-1].lower() if "." in fname else ""
-                typ = "image" if ext in IMAGE_EXTS else "video" if ext in VIDEO_EXTS else "other"
-                url = supabase_public_url(BUCKET_MAP["media"], f"gallery/{fname}")
-                gallery.append({"name": fname, "type": typ, "url": url})
-            # newest-first attempt: client list may return timestamps but we don't rely on them here
-        except Exception as e:
-            print("⚠️ Could not list Supabase gallery:", e)
-
-    blogs = load_blogs()
-
-    return render_template_string(
-        PAGE,
+    return render_template(
+        "index.html",
         cv_file=owner_cv_filename(),
         allowed_exts=sorted(ALLOWED_EXTS),
         year=datetime.now().year,
-        profile_url=media_url("profile", prof) if prof else None,
-        hero_url=media_url("hero", hero) if hero else None,
+        profile_url=media_url("profile", prof_name) if prof_name else None,
+        hero_url=media_url("hero", hero_name) if hero_name else None,
         gallery_images=gallery,
         blog_posts=blogs
     )
@@ -1017,7 +122,7 @@ def subscribe():
     if not email or "@" not in email:
         flash("Please provide a valid email address.")
         return redirect(url_for("index") + "#newsletter")
-    save_subscriber(email)
+    data.save_subscriber(email)
     flash("Thanks! You are subscribed to updates.")
     return redirect(url_for("index") + "#newsletter")
 
@@ -1029,133 +134,73 @@ def contact():
     if not (name and email and message):
         flash("Please fill in all fields.")
         return redirect(url_for("index") + "#contact")
-    save_message(name, email, message)
+    data.save_message(name, email, message)
     flash("Thanks, your message was received! ✅")
     return redirect(url_for("index") + "#contact")
 
-# ====== Upload project (visitor) ======
 @app.route("/upload_project", methods=["POST"])
 def upload_project():
     up = request.files.get("file")
-    # Save locally and upload to Supabase pending bucket if configured
-    fname, err = handle_upload(up, UPLOAD_DIR_PENDING, supabase_bucket=BUCKET_MAP.get("uploads_pending"), supabase_prefix="")
+    if not up or up.filename == "":
+        flash("No file selected.")
+        return redirect(url_for("index") + "#portfolio")
+    if not allowed_file(up.filename):
+        flash("Invalid file type.")
+        return redirect(url_for("index") + "#portfolio")
+    fname, err = data.save_file_from_storage('project', up, approve=False)
     if err:
         flash(err)
     else:
         flash(f"Project '{fname}' uploaded (private). Admin will review. ✅")
     return redirect(url_for("index") + "#portfolio")
 
-# ====== Download & media serving (support local first then supabase) ======
 @app.route("/download/<kind>/<path:filename>")
 def download_file(kind, filename):
-    # kind: "project" (approved) or "cv"
     safe = secure_filename(urllib.parse.unquote(filename))
     if kind == "project":
-        local_path = os.path.join(UPLOAD_DIR_APPROVED, safe)
-        if os.path.exists(local_path):
-            return send_from_directory(UPLOAD_DIR_APPROVED, safe, as_attachment=True)
-        # fallback to Supabase public URL
-        if SUPABASE_ENABLED:
-            public = supabase_public_url(BUCKET_MAP["uploads_projects"], safe)
-            return redirect(public)
+        rec = data.get_file_record('project', safe, approved=True)
+        if not rec:
+            abort(404)
+        content = rec['content']
+        mimetype = rec.get('mimetype') or 'application/octet-stream'
+        return send_file(io.BytesIO(content), download_name=safe, as_attachment=True, mimetype=mimetype)
     elif kind == "cv":
-        local_path = os.path.join(UPLOAD_DIR_CV, safe)
-        if os.path.exists(local_path):
-            return send_from_directory(UPLOAD_DIR_CV, safe, as_attachment=True)
-        if SUPABASE_ENABLED:
-            public = supabase_public_url(BUCKET_MAP["uploads_cv"], safe)
-            return redirect(public)
+        rec = data.get_file_record('cv', safe)
+        if not rec:
+            abort(404)
+        content = rec['content']
+        mimetype = rec.get('mimetype') or 'application/octet-stream'
+        return send_file(io.BytesIO(content), download_name=safe, as_attachment=True, mimetype=mimetype)
     abort(404)
 
 @app.route("/media/<kind>/<path:filename>")
 def media_file(kind, filename):
     safe = secure_filename(urllib.parse.unquote(filename))
-    if kind == "profile":
-        local_folder = MEDIA_PROFILE
-        local_path = os.path.join(local_folder, safe)
-        if os.path.exists(local_path):
-            return send_from_directory(local_folder, safe)
-        # fallback Supabase
-        if SUPABASE_ENABLED:
-            public = supabase_public_url(BUCKET_MAP["media"], f"profile/{safe}")
-            return redirect(public)
-    if kind == "hero":
-        local_folder = MEDIA_HERO
-        local_path = os.path.join(local_folder, safe)
-        if os.path.exists(local_path):
-            return send_from_directory(local_folder, safe)
-        if SUPABASE_ENABLED:
-            public = supabase_public_url(BUCKET_MAP["media"], f"hero/{safe}")
-            return redirect(public)
-    if kind == "gallery":
-        local_folder = MEDIA_GALLERY
-        local_path = os.path.join(local_folder, safe)
-        if os.path.exists(local_path):
-            return send_from_directory(local_folder, safe)
-        if SUPABASE_ENABLED:
-            public = supabase_public_url(BUCKET_MAP["media"], f"gallery/{safe}")
-            return redirect(public)
-    abort(404)
+    category = "profile" if kind == "profile" else "hero" if kind == "hero" else "gallery"
+    rec = data.get_file_record(category, safe)
+    if not rec:
+        abort(404)
+    content = rec['content']
+    mimetype = rec.get('mimetype') or 'application/octet-stream'
+    # For images/videos display inline
+    return send_file(io.BytesIO(content), download_name=safe, as_attachment=False, mimetype=mimetype)
 
 # ====== BLOG PUBLIC ======
 @app.route("/blog")
 def blog_list():
-    blogs = load_blogs()
-    BLOG_PAGE = """
-    <!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-      <title>Blog • Muga</title>
-      <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
-    </head><body style="background:#0b1220;color:#e6eef8">
-      <div class="container py-5">
-        <h1>Blog</h1>
-        <p class="text-muted">Insights, tips and updates.</p>
-        {% if blogs %}
-          <div class="row g-4">
-            {% for b in blogs %}
-              <div class="col-md-4">
-                <div style="background:#0f1724;padding:18px;border-radius:12px;">
-                  <h5>{{ b.title }}</h5>
-                  <div class="text-muted">{{ b.timestamp }}</div>
-                  <p>{{ b.content[:160] }}{% if b.content|length>160 %}...{% endif %}</p>
-                  <a class="btn btn-sm btn-outline-primary" href="{{ url_for('view_blog', slug=b.slug) }}">Read</a>
-                </div>
-              </div>
-            {% endfor %}
-          </div>
-        {% else %}
-          <p class="text-muted">No posts yet.</p>
-        {% endif %}
-        <a class="d-block mt-4 btn btn-outline-secondary" href="{{ url_for('index') }}">← Back</a>
-      </div>
-    </body></html>
-    """
-    return render_template_string(BLOG_PAGE, blogs=blogs)
+    blogs = data.load_blogs()
+    return render_template("blog_list.html", blogs=blogs)
 
 @app.route("/blog/<slug>")
 def view_blog(slug):
-    blogs = load_blogs()
-    post = next((b for b in blogs if b.get("slug") == slug), None)
+    post = data.get_blog_by_slug(slug)
     if not post:
         abort(404)
-    BLOG_VIEW = """
-    <!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-      <title>{{ post.title }} • Blog</title>
-      <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
-    </head><body style="background:#0b1220;color:#e6eef8">
-      <div class="container py-5">
-        <a href="{{ url_for('blog_list') }}" class="btn btn-sm btn-outline-secondary mb-3">← Back to Blog</a>
-        <h1>{{ post.title }}</h1>
-        <div class="text-muted mb-3">{{ post.timestamp }}</div>
-        <div style="background:#0f1724;padding:18px;border-radius:12px;white-space:pre-wrap;">{{ post.content }}</div>
-      </div>
-    </body></html>
-    """
-    return render_template_string(BLOG_VIEW, post=post)
+    return render_template("blog_view.html", post=post)
 
 # ====== AUTH ======
 @app.route("/login", methods=["GET", "POST"])
 def login():
-    # original login behavior preserved: compares posted code to ADMIN_KEY and sets session["is_admin"]
     if request.method == "POST":
         code = request.form.get("code", "")
         if code == ADMIN_KEY:
@@ -1164,24 +209,7 @@ def login():
             return redirect(url_for("admin"))
         flash("Wrong passcode.")
         return redirect(url_for("login"))
-    LOGIN_PAGE = """
-    <!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-      <title>Admin Login</title><link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
-    </head><body style="background:#0b1220;color:#e6eef8">
-      <div class="container py-5" style="max-width:480px;">
-        <div style="background:#0f1724;padding:18px;border-radius:12px;">
-          <h3>Admin Login</h3>
-          {% with msgs=get_flashed_messages() %}{% if msgs %}{% for m in msgs %}<div class="alert alert-info">{{ m }}</div>{% endfor %}{% endif %}{% endwith %}
-          <form method="post">
-            <input class="form-control mb-2" type="password" name="code" placeholder="Enter admin passcode" required>
-            <button class="btn btn-primary w-100">Login</button>
-          </form>
-          <a class="d-block mt-3" href="{{ url_for('index') }}">← Back to site</a>
-        </div>
-      </div>
-    </body></html>
-    """
-    return render_template_string(LOGIN_PAGE)
+    return render_template("login.html")
 
 @app.route("/logout")
 def logout():
@@ -1195,7 +223,7 @@ def admin():
     if not require_admin():
         return redirect(url_for("login"))
 
-    full_msgs = load_messages()
+    full_msgs = data.load_messages()
     total_messages = len(full_msgs)
     unread_count = sum(1 for m in full_msgs if m.get("status") == "unread")
 
@@ -1232,404 +260,14 @@ def admin():
         item["gid"] = gid
         display_msgs.append(item)
 
-    prof, _ = latest_file(MEDIA_PROFILE, only_images=True)
-    hero, _ = latest_file(MEDIA_HERO, only_images=True)
-    # gallery list both local and supabase-aware
-    gal = []
-    # local gallery first
-    try:
-        if os.path.exists(MEDIA_GALLERY):
-            for f in sorted(os.listdir(MEDIA_GALLERY), reverse=True):
-                p = os.path.join(MEDIA_GALLERY, f)
-                if not os.path.isfile(p):
-                    continue
-                ext = f.rsplit(".", 1)[-1].lower() if "." in f else ""
-                typ = "image" if ext in IMAGE_EXTS else "video" if ext in VIDEO_EXTS else "other"
-                gal.append({"name": f, "type": typ, "url": media_url("gallery", f)})
-    except Exception:
-        gal = []
-    # fallback to supabase if empty and enabled
-    if not gal and SUPABASE_ENABLED:
-        try:
-            items = supabase.storage.from_(BUCKET_MAP["media"]).list("gallery")
-            for it in items:
-                if it.get("id") is None:
-                    continue
-                name = it.get("name")
-                if "/" in name:
-                    parts = name.split("/", 1)
-                    if parts[0] == "gallery":
-                        fname = parts[1]
-                    else:
-                        fname = name
-                else:
-                    fname = name
-                ext = fname.rsplit(".", 1)[-1].lower() if "." in fname else ""
-                typ = "image" if ext in IMAGE_EXTS else "video" if ext in VIDEO_EXTS else "other"
-                url = supabase_public_url(BUCKET_MAP["media"], f"gallery/{fname}")
-                gal.append({"name": fname, "type": typ, "url": url})
-        except Exception as e:
-            print("⚠️ Could not list gallery for admin:", e)
+    prof_name, _ = latest_file("profile", only_images=True)
+    hero_name, _ = latest_file("hero", only_images=True)
+    gal = list_gallery_media()
+    blogs = data.load_blogs()
+    subscribers = data.load_subscribers()
 
-    blogs = load_blogs()
-    subscribers = load_subscribers()
-
-    # ADMIN_PAGE includes Chart.js analytics and improved message modal scripts (kept as original)
-    ADMIN_PAGE = """<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Admin • Panel</title>
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
-    <style>
-      body{background:#0b1220;color:#e6eef8;padding:18px}
-      .card{border:0;border-radius:12px;background:#0f1724;padding:12px}
-      .small-muted{ color:#9aa1b0 }
-    </style>
-    </head><body>
-    <div class="container-fluid">
-      <div class="d-flex justify-content-between align-items-center mb-3">
-        <div><h1 class="mb-0">Admin Panel</h1><div class="text-muted">Manage messages, uploads & media</div></div>
-        <div class="d-flex gap-2">
-          <a class="btn btn-outline-secondary" href="{{ url_for('export_messages') }}">Export CSV</a>
-          <a class="btn btn-outline-secondary" href="{{ url_for('logout') }}">Logout</a>
-        </div>
-      </div>
-
-      {% with msgs_flash = get_flashed_messages() %}
-        {% if msgs_flash %}
-          <div class="mb-3">
-            {% for fm in msgs_flash %}<div class="alert alert-info">{{ fm }}</div>{% endfor %}
-          </div>
-        {% endif %}
-      {% endwith %}
-
-      <div class="row g-4">
-        <div class="col-lg-7">
-          <div class="card">
-            <div class="d-flex justify-content-between align-items-center mb-2">
-              <h5>Messages ({{ total_filtered }})</h5>
-              <form class="d-flex" method="get" style="gap:8px;">
-                <input name="q" value="{{ q }}" class="form-control form-control-sm" placeholder="Search messages..." aria-label="Search messages">
-                <select name="show" class="form-select form-select-sm" aria-label="Filter messages">
-                  <option value="all" {% if show=='all' %}selected{% endif %}>All</option>
-                  <option value="unread" {% if show=='unread' %}selected{% endif %}>Unread</option>
-                </select>
-                <input type="hidden" name="page" value="1">
-                <button class="btn btn-primary btn-sm">Search</button>
-              </form>
-            </div>
-
-            {% if display_msgs %}
-              <div class="table-responsive">
-                <table class="table table-sm table-striped" style="color:inherit;">
-                  <thead><tr><th>#</th><th>When</th><th>Name</th><th>Email</th><th>Snippet</th><th>Actions</th></tr></thead>
-                  <tbody>
-                    {% for m in display_msgs %}
-                      <tr>
-                        <td>{{ loop.index + (page-1)*per_page }}</td>
-                        <td>{{ m.timestamp }}</td>
-                        <td>{{ m.name }} {% if m.status=='unread' %}<span style="color:#fff;background:#d63384;padding:2px 6px;border-radius:8px;font-size:.8rem;">unread</span>{% endif %}</td>
-                        <td><a style="color:inherit" href="mailto:{{ m.email }}">{{ m.email }}</a></td>
-                        <td style="max-width:220px;overflow:hidden;text-overflow:ellipsis;">{{ m.message[:120] }}{% if m.message|length>120 %}...{% endif %}</td>
-                        <td>
-                          <button class="btn btn-sm btn-outline-primary" onclick="openMessageModal({{ m.gid }})">View</button>
-                          <form method="post" action="{{ url_for('delete_message', mid=m.gid) }}" style="display:inline">
-                            <button class="btn btn-sm btn-danger" onclick="return confirm('Delete?')">Delete</button>
-                          </form>
-                        </td>
-                      </tr>
-                    {% endfor %}
-                  </tbody>
-                </table>
-              </div>
-
-              <nav class="mt-2"><ul class="pagination pagination-sm">
-                <li class="page-item {% if page<=1 %}disabled{% endif %}"><a class="page-link" href="{{ url_for('admin') }}?q={{ q|urlencode }}&show={{ show }}&page={{ page-1 }}&per_page={{ per_page }}">Previous</a></li>
-                {% for p in range(1, pages+1) %}<li class="page-item {% if p==page %}active{% endif %}"><a class="page-link" href="{{ url_for('admin') }}?q={{ q|urlencode }}&show={{ show }}&page={{ p }}&per_page={{ per_page }}">{{ p }}</a></li>{% endfor %}
-                <li class="page-item {% if page>=pages %}disabled{% endif %}"><a class="page-link" href="{{ url_for('admin') }}?q={{ q|urlencode }}&show={{ show }}&page={{ page+1 }}&per_page={{ per_page }}">Next</a></li>
-              </ul></nav>
-            {% else %}
-              <p class="text-muted">No messages match your criteria.</p>
-            {% endif %}
-          </div>
-
-          <!-- Analytics chart (Chart.js) -->
-          <div class="card mt-3">
-            <h5>Analytics (Messages last 30 days)</h5>
-            <canvas id="messagesChart" width="400" height="120" aria-label="Messages chart"></canvas>
-            <small class="text-muted d-block mt-2">This chart shows number of messages per day (last 30 days).</small>
-          </div>
-
-        </div>
-
-        <div class="col-lg-5">
-          <div class="card">
-            <h5>Visitor Uploads (Pending) <small>({{ pending|length }})</small></h5>
-            {% if pending %}
-              <ul class="list-group mb-2">
-                {% for f in pending %}
-                  <li class="list-group-item d-flex justify-content-between align-items-center" style="background:#0f1724;color:inherit;border:1px solid #1d2b4a;">
-                    <span style="max-width:60%;overflow:hidden;text-overflow:ellipsis;">{{ f }}</span>
-                    <span class="d-flex gap-2">
-                      <form method="post" action="{{ url_for('approve_file', filename=f) }}"><button class="btn btn-sm btn-success">Approve</button></form>
-                      <form method="post" action="{{ url_for('reject_file', filename=f) }}"><button class="btn btn-sm btn-danger">Reject</button></form>
-                    </span>
-                  </li>
-                {% endfor %}
-              </ul>
-            {% else %}
-              <p class="text-muted">No pending uploads.</p>
-            {% endif %}
-
-            <hr>
-            <h5>Approved Files</h5>
-            {% if projects %}
-              <ul class="list-group mb-2">
-                {% for f in projects %}
-                  <li class="list-group-item d-flex justify-content-between align-items-center" style="background:#0f1724;color:inherit;border:1px solid #1d2b4a;">
-                    <span style="max-width:60%;overflow:hidden;text-overflow:ellipsis;">{{ f }}</span>
-                    <span>
-                      <a class="btn btn-sm btn-outline-secondary" href="{{ url_for('download_file', kind='project', filename=f) }}">Download</a>
-                      <form method="post" action="{{ url_for('delete_project', filename=f) }}" style="display:inline"><button class="btn btn-sm btn-danger">Delete</button></form>
-                    </span>
-                  </li>
-                {% endfor %}
-              </ul>
-            {% else %}
-              <p class="text-muted">No approved files yet.</p>
-            {% endif %}
-
-            <hr>
-            <h5>Owner CV</h5>
-            {% if cv_file %}
-              <p>Latest CV: <strong>{{ cv_file }}</strong></p>
-              <a class="btn btn-sm btn-outline-primary" href="{{ url_for('download_file', kind='cv', filename=cv_file) }}">Download CV</a>
-            {% else %}
-              <p class="text-muted">No CV uploaded yet.</p>
-            {% endif %}
-            <form method="post" enctype="multipart/form-data" action="{{ url_for('upload_cv_admin') }}" class="mt-2">
-              <input type="file" name="cv" class="form-control form-control-sm mb-2" required>
-              <button class="btn btn-warning btn-sm">Upload / Replace CV</button>
-            </form>
-          </div>
-
-          <div class="card mt-3">
-            <h5>Site Media</h5>
-            <div class="mb-2">
-              <div class="small-muted">Profile</div>
-              {% if prof %}<img src="{{ url_for('media_file', kind='profile', filename=prof) }}" style="width:64px;height:64px;border-radius:8px;">{% else %}<div class="text-muted">None</div>{% endif %}
-              <form method="post" enctype="multipart/form-data" action="{{ url_for('upload_profile_image') }}" class="mt-2">
-                <input type="file" name="image" accept="image/*" class="form-control form-control-sm mb-2" required>
-                <button class="btn btn-outline-primary btn-sm">Upload</button>
-              </form>
-            </div>
-            <div class="mb-2">
-              <div class="small-muted">Hero Background</div>
-              {% if hero %}<img src="{{ url_for('media_file', kind='hero', filename=hero) }}" style="width:100%;height:80px;object-fit:cover;border-radius:8px;">{% else %}<div class="text-muted">None</div>{% endif %}
-              <form method="post" enctype="multipart/form-data" action="{{ url_for('upload_hero_image') }}" class="mt-2">
-                <input type="file" name="image" accept="image/*" class="form-control form-control-sm mb-2" required>
-                <button class="btn btn-outline-primary btn-sm">Upload</button>
-              </form>
-            </div>
-
-            <hr>
-            <h6>Gallery</h6>
-            <form method="post" enctype="multipart/form-data" action="{{ url_for('upload_gallery') }}">
-              <input type="file" name="images" accept="image/*,video/*" multiple class="form-control form-control-sm mb-2" required>
-              <button class="btn btn-primary btn-sm">Upload Image(s) / Video(s)</button>
-            </form>
-            {% if gal %}
-              <ul class="list-group mt-2">
-                {% for g in gal %}
-                  <li class="list-group-item d-flex justify-content-between align-items-center" style="background:#0f1724;color:inherit;">
-                    <div style="display:flex;align-items:center;gap:8px;">
-                      {% if g.type == 'image' %}
-                        <img src="{{ g.url }}" style="width:56px;height:56px;object-fit:cover;border-radius:8px;">
-                      {% elif g.type == 'video' %}
-                        <video muted playsinline preload="metadata" style="width:56px;height:56px;object-fit:cover;border-radius:8px;">
-                          <source src="{{ g.url }}">
-                        </video>
-                      {% else %}
-                        <img src="{{ g.url }}" style="width:56px;height:56px;object-fit:cover;border-radius:8px;">
-                      {% endif %}
-                      <span style="max-width:220px;overflow:hidden;text-overflow:ellipsis;">{{ g.name }}</span>
-                    </div>
-                    <form method="post" action="{{ url_for('delete_gallery_image', filename=g.name) }}"><button class="btn btn-sm btn-danger">Delete</button></form>
-                  </li>
-                {% endfor %}
-              </ul>
-            {% else %}
-              <p class="text-muted mt-2">No gallery media yet.</p>
-            {% endif %}
-          </div>
-
-        </div>
-      </div>
-
-      <hr>
-      <h5>Blog Posts</h5>
-      <div class="card">
-        <form method="post" action="{{ url_for('admin_add_blog') }}">
-          <input name="title" class="form-control mb-2" placeholder="Post title" required>
-          <textarea name="content" class="form-control mb-2" rows="4" placeholder="Write post content (plain text)..." required></textarea>
-          <button class="btn btn-primary btn-sm">Publish</button>
-        </form>
-
-        <hr>
-        {% if blogs %}
-          <ul class="list-group">
-            {% for b in blogs %}
-              <li class="list-group-item d-flex justify-content-between align-items-center" style="background:#0f1724;color:inherit;">
-                <div>
-                  <strong>{{ b.title }}</strong><div class="text-muted">{{ b.timestamp }}</div>
-                </div>
-                <div>
-                  <a class="btn btn-sm btn-outline-primary" href="{{ url_for('view_blog', slug=b.slug) }}" target="_blank">View</a>
-                  <form method="post" action="{{ url_for('admin_delete_blog', bid=b.id) }}" style="display:inline"><button class="btn btn-sm btn-danger">Delete</button></form>
-                </div>
-              </li>
-            {% endfor %}
-          </ul>
-        {% else %}
-          <p class="text-muted">No blog posts yet.</p>
-        {% endif %}
-      </div>
-
-      <hr>
-      <h5>Subscribers ({{ subscribers|length }})</h5>
-      <div class="card">
-        {% if subscribers %}
-          <ul class="list-group">
-            {% for s in subscribers %}
-              <li class="list-group-item d-flex justify-content-between align-items-center" style="background:#0f1724;color:inherit;">
-                <div>{{ s.get('email') }} <div class="text-muted small">{{ s.get('timestamp') }}</div></div>
-              </li>
-            {% endfor %}
-          </ul>
-        {% else %}
-          <p class="text-muted">No subscribers yet.</p>
-        {% endif %}
-      </div>
-
-    </div>
-
-    <!-- Message modal -->
-    <div class="modal fade" id="msgModal" tabindex="-1" aria-hidden="true">
-      <div class="modal-dialog modal-lg modal-dialog-centered">
-        <div class="modal-content" style="background:#0b1220;border:1px solid #1d2b4a;">
-          <div class="modal-header"><h5 class="modal-title">Message details</h5><button class="btn-close" data-bs-dismiss="modal"></button></div>
-          <div class="modal-body">
-            <div><strong>From:</strong> <span id="modal-name"></span></div>
-            <div class="mb-2"><strong>Email:</strong> <a id="modal-email" href=""></a></div>
-            <div class="mb-2"><strong>When:</strong> <span id="modal-when"></span></div>
-            <hr>
-            <div id="modal-message" style="white-space:pre-wrap;"></div>
-          </div>
-          <div class="modal-footer">
-            <button id="modal-toggle-read" class="btn btn-outline-primary">Mark read</button>
-            <form id="modal-delete-form" method="post" action=""><button class="btn btn-danger" onclick="return confirm('Delete this message?')">Delete</button></form>
-            <button class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
-          </div>
-        </div>
-      </div>
-    </div>
-
-    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
-    <script>
-      // openMessageModal uses credentials and improved error handling
-      function openMessageModal(gid){
-        try {
-          const base = '{{ url_for("message_json", mid=0) }}';
-          const url = base.replace('/0', '/' + encodeURIComponent(gid));
-          fetch(url, { credentials: 'same-origin' })
-            .then(r => {
-              if (!r.ok) {
-                console.error('Failed to fetch message JSON, status:', r.status, r.statusText);
-                throw new Error('Status ' + r.status);
-              }
-              return r.json();
-            })
-            .then(data => {
-              document.getElementById('modal-name').innerText = data.name || '(no name)';
-              const emailEl = document.getElementById('modal-email');
-              emailEl.innerText = data.email || '(no email)'; emailEl.href = 'mailto:' + (data.email || '');
-              document.getElementById('modal-when').innerText = data.timestamp || '';
-              document.getElementById('modal-message').innerText = data.message || '';
-              const form = document.getElementById('modal-delete-form'); form.action = '/admin/delete_message/' + encodeURIComponent(gid);
-              const toggleBtn = document.getElementById('modal-toggle-read');
-              // handler
-              toggleBtn.onclick = function(){
-                fetch('/admin/toggle_read_json/' + encodeURIComponent(gid), { method: 'POST', credentials: 'same-origin' })
-                  .then(r => {
-                    if (!r.ok) {
-                      console.error('Toggle read failed, status:', r.status);
-                      throw new Error('Toggle status ' + r.status);
-                    }
-                    return r.json();
-                  })
-                  .then(res => {
-                    if (res.status) {
-                      toggleBtn.innerText = res.status === 'read' ? 'Mark unread' : 'Mark read';
-                    }
-                  }).catch(e => {
-                    alert('Could not toggle read/unread. See console for details.');
-                    console.error(e);
-                  });
-              };
-              toggleBtn.innerText = data.status === 'unread' ? 'Mark read' : 'Mark unread';
-              const modal = new bootstrap.Modal(document.getElementById('msgModal')); modal.show();
-            })
-            .catch(e => {
-              alert('Could not load message — check console for details.');
-              console.error('openMessageModal error:', e);
-            });
-        } catch (err) {
-          alert('An unexpected error occurred while opening the message.');
-          console.error(err);
-        }
-      }
-
-      // Chart: fetch analytics data endpoint and render
-      async function loadMessagesChart() {
-        try {
-          const resp = await fetch('{{ url_for("admin_analytics_data") }}', { credentials: 'same-origin' });
-          if(!resp.ok) throw new Error('Fetch analytics failed: ' + resp.status);
-          const data = await resp.json();
-          const ctx = document.getElementById('messagesChart').getContext('2d');
-          const chart = new Chart(ctx, {
-            type: 'bar',
-            data: {
-              labels: data.labels,
-              datasets: [{
-                label: 'Messages',
-                data: data.values,
-                borderRadius: 6,
-                barPercentage: 0.8,
-                categoryPercentage: 0.8
-              }]
-            },
-            options: {
-              responsive: true,
-              plugins: {
-                legend: { display: false },
-                tooltip: { mode: 'index', intersect: false }
-              },
-              scales: {
-                x: { ticks: { color: '#cbd5e1' } },
-                y: { ticks: { color: '#cbd5e1' }, beginAtZero: true }
-              }
-            }
-          });
-        } catch (e) {
-          console.error('loadMessagesChart error:', e);
-        }
-      }
-      loadMessagesChart();
-    </script>
-
-    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
-    </body></html>
-    """
-    return render_template_string(
-        ADMIN_PAGE,
+    return render_template(
+        "admin.html",
         total_messages=total_messages,
         unread_count=unread_count,
         pending_count=pending_count,
@@ -1644,8 +282,8 @@ def admin():
         pages=pages,
         per_page=per_page,
         total_filtered=total_filtered,
-        prof=prof,
-        hero=hero,
+        prof=prof_name,
+        hero=hero_name,
         gal=gal,
         blogs=blogs,
         subscribers=subscribers
@@ -1656,22 +294,18 @@ def admin():
 def message_json(mid):
     if not require_admin():
         return jsonify({"error": "unauthorized"}), 403
-    msgs = load_messages()
-    if mid < 0 or mid >= len(msgs):
+    m = data.get_message_by_index(mid)
+    if not m:
         return jsonify({"error": "not found"}), 404
-    return jsonify(msgs[mid])
+    return jsonify(m)
 
 @app.route("/admin/toggle_read_json/<int:mid>", methods=["POST"])
 def toggle_read_json(mid):
     if not require_admin():
         return jsonify({"error": "unauthorized"}), 403
-    msgs = load_messages()
-    if mid < 0 or mid >= len(msgs):
+    ok, new = data.toggle_message_status_by_index(mid)
+    if not ok:
         return jsonify({"error": "not found"}), 404
-    current = msgs[mid].get("status", "unread")
-    new = "read" if current == "unread" else "unread"
-    msgs[mid]["status"] = new
-    save_all_messages(msgs)
     return jsonify({"status": new})
 
 # ====== ADMIN Analytics data endpoint (Phase 1) ======
@@ -1679,27 +313,7 @@ def toggle_read_json(mid):
 def admin_analytics_data():
     if not require_admin():
         return jsonify({"error": "unauthorized"}), 403
-    # messages per day for last 30 days
-    msgs = load_messages()
-    now = datetime.now()
-    days = 30
-    counts = Counter()
-    for m in msgs:
-        ts = m.get("timestamp", "")
-        try:
-            dt = datetime.fromisoformat(ts)
-            # only last 30 days
-            if dt >= now - timedelta(days=days-1):
-                day = dt.date().isoformat()
-                counts[day] += 1
-        except Exception:
-            continue
-    labels = []
-    values = []
-    for d in (now.date() - timedelta(days=i) for i in reversed(range(days))):
-        s = d.isoformat()
-        labels.append(s)
-        values.append(counts.get(s, 0))
+    labels, values = data.get_messages_counts_last_n_days(30)
     return jsonify({"labels": labels, "values": values})
 
 # ====== MESSAGE DELETE ======
@@ -1707,12 +321,10 @@ def admin_analytics_data():
 def delete_message(mid):
     if not require_admin():
         return redirect(url_for("login"))
-    msgs = load_messages()
-    if mid < 0 or mid >= len(msgs):
+    ok, deleted = data.delete_message_by_index(mid)
+    if not ok:
         flash("Message not found.")
         return redirect(url_for("admin"))
-    deleted = msgs.pop(mid)
-    save_all_messages(msgs)
     flash(f"Deleted message from {deleted.get('name','unknown')}.")
     return redirect(url_for("admin"))
 
@@ -1721,10 +333,15 @@ def delete_message(mid):
 def export_messages():
     if not require_admin():
         return redirect(url_for("login"))
-    if not os.path.exists(MESSAGES_CSV):
+    csv_bytes = data.export_messages_csv()
+    if not csv_bytes:
         flash("No messages to export.")
         return redirect(url_for("admin"))
-    return send_from_directory(DATA_DIR, os.path.basename(MESSAGES_CSV), as_attachment=True)
+    return Response(
+        csv_bytes,
+        mimetype="text/csv",
+        headers={"Content-Disposition": "attachment;filename=messages.csv"},
+    )
 
 # ====== PROJECT MANAGEMENT (admin) ======
 @app.route("/admin/delete_project/<path:filename>", methods=["POST"])
@@ -1732,20 +349,11 @@ def delete_project(filename):
     if not require_admin():
         return redirect(url_for("login"))
     fname = urllib.parse.unquote(filename)
-    safe_name = secure_filename(fname)
-    path = os.path.join(UPLOAD_DIR_APPROVED, safe_name)
-    # delete local file if exists
-    if os.path.exists(path):
-        try:
-            os.remove(path)
-            flash(f"Deleted file '{safe_name}'.")
-        except OSError:
-            flash("Could not delete file.")
+    ok = data.delete_project_by_name(fname)
+    if ok:
+        flash(f"Deleted file '{fname}'.")
     else:
-        flash("File not found locally.")
-    # delete remote copy if Supabase enabled
-    if SUPABASE_ENABLED:
-        supabase_delete_file(BUCKET_MAP["uploads_projects"], safe_name)
+        flash("File not found.")
     return redirect(url_for("admin"))
 
 @app.route("/admin/approve/<path:filename>", methods=["POST"])
@@ -1753,27 +361,11 @@ def approve_file(filename):
     if not require_admin():
         return redirect(url_for("login"))
     fname = urllib.parse.unquote(filename)
-    safe_name = secure_filename(fname)
-    src = os.path.join(UPLOAD_DIR_PENDING, safe_name)
-    dst = os.path.join(UPLOAD_DIR_APPROVED, safe_name)
-    if os.path.exists(src):
-        try:
-            shutil.move(src, dst)
-            flash(f"Approved '{safe_name}'.")
-        except Exception:
-            flash("Could not move file.")
+    ok = data.approve_project_by_name(fname)
+    if ok:
+        flash(f"Approved '{fname}'.")
     else:
         flash("File not found.")
-    # Supabase: copy remote pending -> uploads_projects (upload local dst) then delete pending remote
-    if SUPABASE_ENABLED:
-        try:
-            # upload newly moved local file to uploads_projects bucket
-            if os.path.exists(dst):
-                supabase_upload_file(BUCKET_MAP["uploads_projects"], safe_name, dst)
-            # remove from pending remote (best-effort)
-            supabase_delete_file(BUCKET_MAP["uploads_pending"], safe_name)
-        except Exception as e:
-            print("⚠️ Supabase approve handling issue:", e)
     return redirect(url_for("admin"))
 
 @app.route("/admin/reject/<path:filename>", methods=["POST"])
@@ -1781,16 +373,11 @@ def reject_file(filename):
     if not require_admin():
         return redirect(url_for("login"))
     fname = urllib.parse.unquote(filename)
-    safe_name = secure_filename(fname)
-    path = os.path.join(UPLOAD_DIR_PENDING, safe_name)
-    if os.path.exists(path):
-        os.remove(path)
-        flash(f"Rejected '{safe_name}'.")
+    ok = data.reject_project_by_name(fname)
+    if ok:
+        flash(f"Rejected '{fname}'.")
     else:
         flash("File not found.")
-    # also remove remote pending file
-    if SUPABASE_ENABLED:
-        supabase_delete_file(BUCKET_MAP["uploads_pending"], safe_name)
     return redirect(url_for("admin"))
 
 # ====== CV UPLOAD (admin only) ======
@@ -1805,31 +392,11 @@ def upload_cv_admin():
     if not allowed_file(up.filename):
         flash("Invalid file type.")
         return redirect(url_for("admin"))
-    ext = up.filename.rsplit(".", 1)[1].lower()
-    # remove local existing CVs
-    for f in os.listdir(UPLOAD_DIR_CV):
-        try:
-            os.remove(os.path.join(UPLOAD_DIR_CV, f))
-        except OSError:
-            pass
-    fname = f"Caleb_Muga_CV.{ext}"
-    safe_fname = secure_filename(fname)
-    up.save(os.path.join(UPLOAD_DIR_CV, safe_fname))
-    # upload to supabase and remove other remote CVs
-    if SUPABASE_ENABLED:
-        # delete remote files in uploads_cv then upload new one
-        try:
-            # attempt to list remote cv files and delete them
-            remote_files = supabase_list_files(BUCKET_MAP["uploads_cv"], "")
-            for rf in remote_files:
-                if rf and rf != safe_fname:
-                    supabase_delete_file(BUCKET_MAP["uploads_cv"], rf)
-        except Exception:
-            pass
-        # upload new cv
-        supabase_upload_file(BUCKET_MAP["uploads_cv"], safe_fname, os.path.join(UPLOAD_DIR_CV, safe_fname))
-
-    flash("CV uploaded successfully! ✅")
+    fname, err = data.save_file_from_storage('cv', up, rename_to=f"Caleb_Muga_CV.{up.filename.rsplit('.',1)[1].lower()}", approve=True, single_replace=True)
+    if err:
+        flash(err)
+    else:
+        flash("CV uploaded successfully! ✅")
     return redirect(url_for("admin"))
 
 # ====== MEDIA UPLOADS (admin) ======
@@ -1838,32 +405,17 @@ def upload_profile_image():
     if not require_admin():
         return redirect(url_for("login"))
     up = request.files.get("image")
-    fname, err = handle_image_upload(up, MEDIA_PROFILE, rename_to=None, supabase_bucket=BUCKET_MAP.get("media"), supabase_prefix="profile/")
+    if not up or up.filename == "":
+        flash("No image selected.")
+        return redirect(url_for("admin"))
+    if not allowed_image(up.filename):
+        flash("Invalid image type.")
+        return redirect(url_for("admin"))
+    fname, err = data.save_file_from_storage('profile', up, approve=True, single_replace=True)
     if err:
         flash(err)
-        return redirect(url_for("admin"))
-    # remove local other files
-    for f in os.listdir(MEDIA_PROFILE):
-        if f != fname:
-            try:
-                os.remove(os.path.join(MEDIA_PROFILE, f))
-            except OSError:
-                pass
-    # remove remote profile images except this one
-    if SUPABASE_ENABLED:
-        try:
-            remote_files = supabase_list_files(BUCKET_MAP["media"], "profile")
-            for rf in remote_files:
-                # rf might be 'profile/xxx' or 'xxx' depending on API - normalize
-                if "/" in rf:
-                    rf_name = rf.split("/", 1)[1]
-                else:
-                    rf_name = rf
-                if rf_name != fname:
-                    supabase_delete_file(BUCKET_MAP["media"], f"profile/{rf_name}")
-        except Exception:
-            pass
-    flash("Profile image updated. ✅")
+    else:
+        flash("Profile image updated. ✅")
     return redirect(url_for("admin"))
 
 @app.route("/admin/upload_hero_image", methods=["POST"])
@@ -1871,30 +423,17 @@ def upload_hero_image():
     if not require_admin():
         return redirect(url_for("login"))
     up = request.files.get("image")
-    fname, err = handle_image_upload(up, MEDIA_HERO, rename_to=None, supabase_bucket=BUCKET_MAP.get("media"), supabase_prefix="hero/")
+    if not up or up.filename == "":
+        flash("No image selected.")
+        return redirect(url_for("admin"))
+    if not allowed_image(up.filename):
+        flash("Invalid image type.")
+        return redirect(url_for("admin"))
+    fname, err = data.save_file_from_storage('hero', up, approve=True, single_replace=True)
     if err:
         flash(err)
-        return redirect(url_for("admin"))
-    for f in os.listdir(MEDIA_HERO):
-        if f != fname:
-            try:
-                os.remove(os.path.join(MEDIA_HERO, f))
-            except OSError:
-                pass
-    # remove remote hero files except current
-    if SUPABASE_ENABLED:
-        try:
-            remote_files = supabase_list_files(BUCKET_MAP["media"], "hero")
-            for rf in remote_files:
-                if "/" in rf:
-                    rf_name = rf.split("/", 1)[1]
-                else:
-                    rf_name = rf
-                if rf_name != fname:
-                    supabase_delete_file(BUCKET_MAP["media"], f"hero/{rf_name}")
-        except Exception:
-            pass
-    flash("Hero background updated. ✅")
+    else:
+        flash("Hero background updated. ✅")
     return redirect(url_for("admin"))
 
 @app.route("/admin/upload_gallery", methods=["POST"])
@@ -1911,17 +450,9 @@ def upload_gallery():
             continue
         ext = up.filename.rsplit(".", 1)[-1].lower() if "." in up.filename else ""
         if ext in IMAGE_EXTS or ext in VIDEO_EXTS:
-            fname = (datetime.now().strftime("%Y%m%d_%H%M%S_") + secure_filename(up.filename))
-            local_path = os.path.join(MEDIA_GALLERY, fname)
-            up.save(local_path)
-            uploaded += 1
-            # upload to Supabase gallery prefix
-            if SUPABASE_ENABLED:
-                try:
-                    with open(local_path, "rb") as f:
-                        supabase.storage.from_(BUCKET_MAP["media"]).upload(f"gallery/{fname}", f, {"upsert": True})
-                except Exception as e:
-                    print("⚠️ Supabase gallery upload error:", e)
+            fname, err = data.save_file_from_storage('gallery', up, approve=True)
+            if fname:
+                uploaded += 1
     if uploaded:
         flash(f"Uploaded {uploaded} item(s) to gallery. ✅")
     else:
@@ -1933,18 +464,11 @@ def delete_gallery_image(filename):
     if not require_admin():
         return redirect(url_for("login"))
     fname = secure_filename(urllib.parse.unquote(filename))
-    path = os.path.join(MEDIA_GALLERY, fname)
-    if os.path.exists(path):
-        try:
-            os.remove(path)
-            flash(f"Deleted gallery media '{fname}'.")
-        except OSError:
-            flash("Could not delete media.")
+    ok = data.delete_file('gallery', fname)
+    if ok:
+        flash(f"Deleted gallery media '{fname}'.")
     else:
         flash("Media not found.")
-    # delete remote as well
-    if SUPABASE_ENABLED:
-        supabase_delete_file(BUCKET_MAP["media"], f"gallery/{fname}")
     return redirect(url_for("admin"))
 
 # ====== BLOG (admin create/delete) ======
@@ -1957,7 +481,7 @@ def admin_add_blog():
     if not (title and content):
         flash("Title and content required.")
         return redirect(url_for("admin"))
-    add_blog(title, content)
+    data.add_blog(title, content)
     flash("Blog post published.")
     return redirect(url_for("admin"))
 
@@ -1965,27 +489,18 @@ def admin_add_blog():
 def admin_delete_blog(bid):
     if not require_admin():
         return redirect(url_for("login"))
-    delete_blog_by_id(bid)
+    data.delete_blog_by_id(bid)
     flash("Blog post deleted.")
     return redirect(url_for("admin"))
 
 # ====== ERROR HANDLERS (Phase 1) ======
+@app.errorhandler(404)
+def page_not_found(e):
+    return render_template("404.html"), 404
 
 @app.errorhandler(500)
 def server_error(e):
-    PAGE_500 = """
-    <!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-      <title>Server Error</title>
-      <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
-    </head><body style="background:#0b1220;color:#e6eef8">
-      <div class="container py-5 text-center">
-        <h1>500 — Server error</h1>
-        <p>Something went wrong. Try again later.</p>
-        <a class="btn btn-outline-secondary" href="{{ url_for('index') }}">Back to home</a>
-      </div>
-    </body></html>
-    """
-    return render_template_string(PAGE_500), 500
+    return render_template("500.html"), 500
 
 # ====== MAIN ======
 if __name__ == "__main__":
