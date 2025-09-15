@@ -1,0 +1,2 @@
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });//# sourceMappingURL=https://main.vscode-cdn.net/sourcemaps/6f17636121051a53c88d3e605c491d22af2ba755/node_modules/font-ligatures/dist/tables.js.map
