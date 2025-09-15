@@ -493,6 +493,10 @@ def admin_delete_blog(bid):
     flash("Blog post deleted.")
     return redirect(url_for("admin"))
 
+@app.route('/sitemap.xml')
+def sitemap():
+    return send_from_directory('static', 'sitemap.xml')
+
 # ====== ERROR HANDLERS (Phase 1) ======
 @app.errorhandler(404)
 def page_not_found(e):
