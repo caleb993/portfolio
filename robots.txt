@@ -1,0 +1,3 @@
+User-agent: *
+Allow: /
+Sitemap: https://portfolio-sj7l.onrender.com/static/sitemap.xml
