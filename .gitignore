@@ -32,3 +32,5 @@ media/profile/*
 
 # Environment files
 .env
+Microsoft VS Code/
+*.exe
