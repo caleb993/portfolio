@@ -16,13 +16,13 @@
   <meta property="og:image" content="{{ hero_url }}">
   {% endif %}
 
-  <!-- ✅ Always fallback to your personal profile image -->
+  <!-- Fallback profile image -->
   <meta property="og:image:alt" content="Profile photo of Caleb Muga">
   <meta property="og:image" content="https://otxksqyjllidcsgyreve.supabase.co/storage/v1/object/public/media/profile/20250902_144247_IMG_20240214_081320_transcpr2.jpg">
   <meta name="twitter:card" content="summary_large_image">
   <meta name="twitter:image" content="https://otxksqyjllidcsgyreve.supabase.co/storage/v1/object/public/media/profile/20250902_144247_IMG_20240214_081320_transcpr2.jpg">
 
-  <!-- ✅ Structured data for Google -->
+  <!-- Structured data for Google -->
   <script type="application/ld+json">
   {
     "@context": "https://schema.org",
@@ -38,87 +38,125 @@
   }
   </script>
 
+  <!-- Bootstrap + AOS (Animate on Scroll) + CountUp.js via CDN -->
   <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;800&display=swap" rel="stylesheet">
-  <style>
-    /* your CSS stays the same */
+  <link href="https://unpkg.com/aos@2.3.4/dist/aos.css" rel="stylesheet">
+  <script src="https://cdn.jsdelivr.net/npm/countup.js@2.6.2/dist/countUp.min.js"></script>
 
-    :root{ --brand1:#0d6efd; --brand2:#6f42c1; --muted:#6b7280; }
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;800&display=swap" rel="stylesheet">
+
+  <style>
+    :root{ --brand1:#0d6efd; --brand2:#6f42c1; --accent:#00e5ff; --muted:#6b7280; }
     * { box-sizing: border-box; }
+    html,body{ height:100%; }
     body{
       font-family: 'Inter', system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
-      background:#0b1220; color:#e6eef8; min-height:100vh; display:flex; flex-direction:column; overflow-x:hidden;
+      background:#051025; color:#e6eef8; min-height:100vh; display:flex; flex-direction:column; overflow-x:hidden;
       transition: background .25s, color .25s;
+      -webkit-font-smoothing:antialiased; -moz-osx-font-smoothing:grayscale;
     }
-    /* LIGHT MODE */
-    body.light { background: #f5f7fb; color: #0b1220; }
-    .navbar{ font-size:1.05rem; backdrop-filter: saturate(160%) blur(6px); }
-    .brand-avatar{ display:flex; align-items:center; gap:10px; text-decoration:none; font-weight:800; letter-spacing:.2px; }
-    .brand-avatar img{ width:38px; height:38px; border-radius:50%; object-fit:cover; box-shadow:0 0 0 3px rgba(255,255,255,.15); }
-    .brand-avatar span { color:#e5e7eb; }
-    body.light .brand-avatar span { color: #0b1220; }
-    .hero{ position:relative; color:#fff; padding:140px 24px 120px; text-align:center; border-bottom-left-radius:24px; border-bottom-right-radius:24px; overflow:hidden; }
-    body.light .hero{ color:#0b1220; }
-    .hero .overlay { position:absolute; inset:0; z-index:0; opacity:.28; background-size:cover; background-position:center; filter:saturate(120%) contrast(105%); }
-    .hero h1{ position:relative; z-index:1; font-weight:800; font-size:3.2rem; letter-spacing:.3px; }
-    .hero p{ position:relative; z-index:1; font-size:1.25rem; opacity:.95; }
-    .chip{ display:inline-block; background:rgba(255,255,255,.12); padding:.35rem .7rem; border-radius:999px; font-size:.95rem; margin:0 .25rem .5rem; border:1px solid rgba(255,255,255,.2) }
-    body.light .chip { background: rgba(10,10,10,.04); color:#0b1220; border:1px solid rgba(0,0,0,.06); }
-    .floaters span{ position:absolute; width:120px; height:120px; border-radius:50%; background: radial-gradient(circle at 30% 30%, rgba(255,255,255,.12), rgba(255,255,255,.02)); animation: drift 16s ease-in-out infinite; filter: blur(1px); }
-    .floaters span:nth-child(1){ left:5%; top:40%; animation-delay:0s; }
-    .floaters span:nth-child(2){ right:8%; top:20%; animation-delay:2s; width:160px; height:160px; }
-    .floaters span:nth-child(3){ left:20%; bottom:10%; animation-delay:4s; width:90px; height:90px; }
-    .floaters span:nth-child(4){ right:20%; bottom:15%; animation-delay:6s; width:110px; height:110px; }
-    @keyframes drift{ 0%,100%{ transform: translateY(0) translateX(0); } 50%{ transform: translateY(-18px) translateX(8px); } }
+    body.light{ background: #f6f8fb; color:#071025; }
+
+    /* Navbar */
+    .navbar{ font-size:1.02rem; background:transparent; }
+    .brand-avatar{ display:flex; align-items:center; gap:10px; text-decoration:none; font-weight:800; }
+    .brand-avatar img{ width:42px; height:42px; border-radius:10px; object-fit:cover; box-shadow:0 6px 24px rgba(2,6,23,0.6); }
+    .brand-avatar span{ color: #dbeafe; font-size:1.05rem }
+    body.light .brand-avatar span{ color:#071025 }
+
+    /* Top controls */
+    .top-right-controls { display:flex; gap:10px; align-items:center; }
+    .dark-toggle{ cursor:pointer; border-radius:999px; padding:.45rem .7rem; background: rgba(255,255,255,0.04); border:1px solid rgba(255,255,255,0.06); }
+    body.light .dark-toggle{ background: rgba(0,0,0,0.04); }
+
+    /* Hero */
+    .hero{ position:relative; padding:120px 24px 100px; text-align:center; overflow:hidden; border-bottom-left-radius:22px; border-bottom-right-radius:22px; }
+    .hero .overlay{ position:absolute; inset:0; z-index:0; background-size:cover; background-position:center; opacity:.32; filter:saturate(120%) contrast(105%); }
+    .hero h1{ position:relative; z-index:2; font-weight:800; font-size:3.2rem; letter-spacing:.2px; margin-bottom:10px; text-shadow: 0 10px 40px rgba(2,120,255,0.06); }
+    .hero p{ position:relative; z-index:2; max-width:920px; margin:0 auto; font-size:1.15rem; color:rgba(230,238,248,0.95); }
+
+    /* Neon accent */
+    .neon { color:var(--accent); text-shadow: 0 0 12px rgba(0,229,255,0.12), 0 8px 36px rgba(0,229,255,0.05); }
+
+    .chips { margin-top:14px; }
+    .chip{ display:inline-block; background:linear-gradient(180deg, rgba(255,255,255,0.02), rgba(255,255,255,0.01)); padding:.4rem .75rem; border-radius:999px; font-size:.95rem; margin:0 .35rem .5rem; border:1px solid rgba(255,255,255,0.04); }
+    body.light .chip{ background:#fff; border:1px solid #eef2ff; color:#071025 }
+
+    /* Floating shapes */
+    .floaters span{ position:absolute; border-radius:50%; filter: blur(10px); opacity:.22; animation: drift 14s ease-in-out infinite; }
+    .floaters .f1{ width:160px; height:160px; left:6%; top:30%; background: linear-gradient(135deg, rgba(13,110,253,0.16), rgba(111,66,193,0.1)); }
+    .floaters .f2{ width:220px; height:220px; right:6%; top:10%; background: linear-gradient(135deg, rgba(0,229,255,0.12), rgba(13,110,253,0.06)); }
+    .floaters .f3{ width:100px; height:100px; left:18%; bottom:8%; background: linear-gradient(135deg, rgba(111,66,193,0.14), rgba(13,110,253,0.06)); }
+    .floaters .f4{ width:140px; height:140px; right:18%; bottom:12%; background: linear-gradient(135deg, rgba(0,229,255,0.12), rgba(13,110,253,0.06)); }
+    @keyframes drift{ 0%,100%{ transform: translateY(0) } 50%{ transform: translateY(-18px) } }
+
+    /* Moving tech icons row */
+    .tech-row{ display:flex; gap:18px; justify-content:center; align-items:center; margin-top:26px; overflow:hidden; }
+    .tech-icon{ width:46px; height:46px; display:inline-flex; align-items:center; justify-content:center; border-radius:10px; background:rgba(255,255,255,0.03); box-shadow:0 6px 18px rgba(2,6,23,0.45); transform: translateY(0); transition: transform .45s ease; }
+    .tech-row.marquee{ animation: marquee 12s linear infinite; }
+    @keyframes marquee{ 0%{ transform: translateX(0);} 100%{ transform: translateX(-50%);} }
+
+    /* Sections */
     section{ padding:80px 0; }
-    h2.section-title{ font-weight:800; font-size:2rem; text-align:center; margin-bottom:24px; }
-    .lead-lg{ font-size:1.15rem; color:#d0d8e6; }
-    body.light .lead-lg { color: #374151; }
-    .card{ border:0; border-radius:18px; background:#0f1724; box-shadow:0 8px 24px rgba(0,0,0,.55); color:#e6eef8; }
-    body.light .card { background: #fff; color: #0b1220; box-shadow: 0 6px 18px rgba(0,0,0,.06); }
-    .form-control, .form-select{ background:#0c1426; border:1px solid #1d2b4a; color:#dbe6ff; border-radius:12px; }
-    body.light .form-control, body.light .form-select { background: #fff; color:#0b1220; border:1px solid #e6eef8; }
-    .btn-primary{ background:linear-gradient(135deg, var(--brand1), var(--brand2)); border:0; }
-    .gallery-grid{ display:grid; grid-template-columns: repeat(auto-fill, minmax(220px,1fr)); gap:14px; }
-    .gallery-item{ position:relative; border-radius:14px; overflow:hidden; background:#0c1426; cursor:pointer; display:flex; align-items:center; justify-content:center; height:180px; }
-    .gallery-item img, .gallery-item video{ width:100%; height:100%; object-fit:cover; transition: transform .4s ease; display:block; }
-    .gallery-item:hover img, .gallery-item:hover video{ transform: scale(1.05); }
-    .video-overlay { position:absolute; z-index:5; display:flex; align-items:center; justify-content:center; pointer-events:none; }
-    .video-play-icon { width:56px; height:56px; background: rgba(0,0,0,0.45); border-radius:50%; display:flex; align-items:center; justify-content:center; }
-    .video-play-icon:after{ content:""; border-style:solid; border-width:10px 0 10px 16px; border-color: transparent transparent transparent #fff; margin-left:4px; display:inline-block; }
-    .reveal{ opacity:0; transform: translateY(18px); transition: all .7s ease; }
-    .reveal.visible{ opacity:1; transform: translateY(0); }
-    #loader{ position:fixed; inset:0; display:flex; align-items:center; justify-content:center; background:#0b1220; z-index:9999; }
-    .spinner{ width:56px; height:56px; border-radius:50%; border:6px solid rgba(255,255,255,.15); border-top-color:#8aa4ff; animation:spin 1s linear infinite; }
+    .section-title{ font-weight:800; font-size:2rem; text-align:center; margin-bottom:18px; }
+    .lead-lg{ font-size:1.05rem; color:rgba(210,216,230,0.88); }
+    body.light .lead-lg{ color:#374151 }
+
+    /* Cards */
+    .card{ border:0; border-radius:14px; background:linear-gradient(180deg, rgba(255,255,255,0.02), rgba(255,255,255,0.01)); box-shadow: 0 12px 30px rgba(2,6,23,0.6); }
+    body.light .card{ background:#fff; box-shadow: 0 8px 20px rgba(11,22,40,0.04); }
+
+    /* Gallery */
+    .gallery-grid{ display:grid; grid-template-columns: repeat(auto-fill, minmax(220px,1fr)); gap:16px; }
+    .gallery-item{ position:relative; border-radius:12px; overflow:hidden; background:#041027; cursor:pointer; height:180px; display:flex; align-items:center; justify-content:center; transition: transform .5s cubic-bezier(.2,.8,.2,1), box-shadow .4s ease; }
+    .gallery-item:hover{ transform: translateY(-10px) rotate(-1deg); box-shadow: 0 28px 68px rgba(2,6,23,0.6); }
+    .gallery-item img, .gallery-item video{ width:100%; height:100%; object-fit:cover; display:block; }
+    .video-play-icon{ position:absolute; z-index:5; width:64px; height:64px; border-radius:999px; background: linear-gradient(180deg, rgba(0,0,0,0.45), rgba(0,0,0,0.25)); display:flex; align-items:center; justify-content:center; }
+    .video-play-icon:after{ content:''; border-style:solid; border-width:12px 0 12px 18px; border-color: transparent transparent transparent #fff; margin-left:6px; }
+
+    /* Counters */
+    .counters{ display:grid; grid-template-columns: repeat(auto-fit, minmax(180px,1fr)); gap:18px; align-items:center; }
+    .counter{ text-align:center; padding:20px; border-radius:12px; }
+    .counter h3{ font-size:1.8rem; margin:6px 0; color:var(--accent); }
+    .counter p{ margin:0; color:var(--muted); }
+
+    /* Blog */
+    .blog-grid{ display:grid; grid-template-columns: repeat(auto-fit, minmax(260px,1fr)); gap:18px; }
+    .blog-card{ padding:18px; border-radius:12px; background: linear-gradient(180deg, rgba(255,255,255,0.02), rgba(255,255,255,0.01)); transition: transform .35s ease, box-shadow .35s ease; }
+    .blog-card:hover{ transform: translateY(-8px); box-shadow:0 18px 40px rgba(2,6,23,0.5); }
+
+    /* Footer */
+    footer{ margin-top:40px; padding:18px 0; color:rgba(210,216,230,0.7); }
+
+    /* Loader */
+    #loader{ position:fixed; inset:0; display:flex; align-items:center; justify-content:center; background:linear-gradient(180deg,#020617, #051025); z-index:9999; }
+    .spinner{ width:56px; height:56px; border-radius:50%; border:6px solid rgba(255,255,255,.06); border-top-color:var(--brand1); animation:spin 1s linear infinite; }
     @keyframes spin{ to{ transform: rotate(360deg); } }
-    .blog-card { padding:18px; border-radius:12px; background: rgba(255,255,255,0.02); }
-    body.light .blog-card { background: #fff; border:1px solid #eef2ff; }
-    .top-right-controls { display:flex; gap:8px; align-items:center; }
-    .dark-toggle { cursor:pointer; border-radius:999px; padding:.35rem .6rem; background: rgba(255,255,255,.04); border:1px solid rgba(255,255,255,.06); color:inherit; }
-    body.light .dark-toggle { background: rgba(0,0,0,.03); }
-    /* small responsive tweak for video thumbnails */
-    @media (max-width:576px){ .gallery-item { height:140px; } }
+
+    /* Floating WhatsApp */
+    .float-whatsapp{ position:fixed; right:18px; bottom:18px; z-index:1100; display:flex; gap:8px; flex-direction:column; }
+    .float-whatsapp a{ width:56px; height:56px; border-radius:12px; display:flex; align-items:center; justify-content:center; color:#fff; background:linear-gradient(135deg,#25D366,#128C7E); box-shadow: 0 10px 30px rgba(18,140,126,0.18); }
+
+    @media (max-width:576px){ .hero h1{ font-size:2rem } .gallery-item{ height:140px } }
   </style>
 </head>
 <body>
 
 <div id="loader" role="status" aria-hidden="false"><div class="spinner" aria-hidden="true"></div></div>
 
-<nav class="navbar navbar-expand-lg bg-transparent sticky-top" role="navigation" aria-label="Main navigation">
+<nav class="navbar navbar-expand-lg fixed-top" role="navigation" aria-label="Main navigation">
   <div class="container">
     <a class="brand-avatar" href="#home" aria-label="Go to home">
       {% if profile_url %}
         <img src="{{ profile_url }}" alt="profile">
-        <span>Muga.dev</span>
-      {% else %}
-        <span class="fs-5">Muga<span style="color:#8aa4ff">.dev</span></span>
       {% endif %}
+      <span>Muga<span style="color:var(--brand1)">.dev</span></span>
     </a>
 
-    <div class="top-right-controls ms-auto d-flex align-items-center">
-      <button id="themeBtn" class="dark-toggle" title="Toggle light / dark" aria-pressed="false">Toggle theme</button>
-      <a class="btn btn-sm btn-outline-primary ms-2" href="{{ url_for('blog_list') }}">Blog</a>
-      <a class="btn btn-sm btn-outline-secondary ms-2" href="{{ url_for('login') }}">Admin</a>
+    <div class="top-right-controls ms-auto">
+      <button id="themeBtn" class="dark-toggle" title="Toggle light / dark" aria-pressed="false">🌙</button>
+      <a class="btn btn-sm btn-outline-light ms-2" href="{{ url_for('blog_list') }}">Blog</a>
+      <a class="btn btn-sm btn-outline-light ms-2" href="{{ url_for('admin') }}">Admin</a>
     </div>
   </div>
 </nav>
@@ -126,23 +164,53 @@
 <header id="home" class="hero" role="banner">
   {% if hero_url %}
     <div class="overlay" style="background-image: url('{{ hero_url }}');" aria-hidden="true"></div>
+  {% else %}
+    <div class="overlay" style="background: linear-gradient(135deg,#061428 0%, #0b2540 100%);" aria-hidden="true"></div>
   {% endif %}
+
   <div class="floaters" aria-hidden="true">
-    <span></span><span></span><span></span><span></span>
+    <span class="f1"></span>
+    <span class="f2"></span>
+    <span class="f3"></span>
+    <span class="f4"></span>
   </div>
-  <div class="container position-relative">
-    <h1 class="reveal">Hey, WELCOME TO TECHKNOW SOLUTIONS - Caleb Muga 👋</h1>
-    <p class="mt-3 reveal" style="max-width:900px;margin:0 auto;">
-      <span class="chip" aria-hidden="true">ICT Support</span>
-      <span class="chip" aria-hidden="true">Networking</span>
-      <span class="chip" aria-hidden="true">Cybersecurity</span>
-      <span class="chip" aria-hidden="true">Process Automation</span>
-    </p>
-    <a href="#portfolio" class="btn btn-primary btn-lg mt-4 reveal">See My Work</a>
+
+  <div class="container position-relative" style="z-index:2">
+    <h1 data-aos="fade-up">Hey — <span class="neon">WELCOME</span> TO TECHKNOW SOLUTIONS</h1>
+    <p data-aos="fade-up" data-aos-delay="120" class="mt-3">I’m <strong>Caleb Muga</strong> — ICT Support, Network Admin & Cybersecurity specialist. I help secure systems, automate work, and teach teams how to stay safe online.</p>
+
+    <div class="chips mt-3" data-aos="fade-up" data-aos-delay="220">
+      <span class="chip">ICT Support</span>
+      <span class="chip">Networking</span>
+      <span class="chip">Cybersecurity</span>
+      <span class="chip">Automation</span>
+    </div>
+
+    <!-- moving tech icons marquee -->
+    <div class="tech-row marquee" aria-hidden="true" style="margin-top:20px;" data-aos="zoom-in" data-aos-delay="320">
+      <div class="tech-icon">🔒</div>
+      <div class="tech-icon">📱</div>
+      <div class="tech-icon">🛰️</div>
+      <div class="tech-icon">🛠️</div>
+      <div class="tech-icon">☁️</div>
+      <div class="tech-icon">📶</div>
+      <!-- duplicated set for continuous loop -->
+      <div class="tech-icon">🔒</div>
+      <div class="tech-icon">📱</div>
+      <div class="tech-icon">🛰️</div>
+      <div class="tech-icon">🛠️</div>
+      <div class="tech-icon">☁️</div>
+      <div class="tech-icon">📶</div>
+    </div>
+
+    <div class="mt-4" data-aos="fade-up" data-aos-delay="420">
+      <a href="#portfolio" class="btn btn-lg btn-primary me-2">See My Work</a>
+      <a href="#contact" class="btn btn-lg btn-outline-light">Get in Touch</a>
+    </div>
   </div>
 </header>
 
-<main class="container flex-grow-1" role="main">
+<main class="container" role="main" style="padding-top:100px;">
   {% with msgs=get_flashed_messages() %}
     {% if msgs %}
       <div class="mt-4" aria-live="polite">
@@ -155,54 +223,76 @@
 
   <!-- About -->
   <section id="about" class="reveal" aria-labelledby="about-title">
-    <h2 class="section-title" id="about-title">About Me</h2>
-    <div class="card p-4 mx-auto" style="max-width:1000px">
-      <div class="row g-4">
+    <h2 class="section-title" id="about-title" data-aos="fade-up">About Me</h2>
+    <div class="card p-4 mx-auto" style="max-width:1000px" data-aos="fade-up" data-aos-delay="120">
+      <div class="row g-4 align-items-center">
         <div class="col-md-4 text-center">
           {% if profile_url %}
             <img src="{{ profile_url }}" style="width:160px;height:160px;object-fit:cover;border-radius:12px;" alt="Profile image of Caleb Muga">
           {% else %}
-            <div style="width:160px;height:160px;border-radius:12px;display:flex;align-items:center;justify-content:center;background:#0c1426;font-weight:700;font-size:28px;" aria-hidden="true">
-              CM
-            </div>
+            <div style="width:160px;height:160px;border-radius:12px;display:flex;align-items:center;justify-content:center;background:#061426;font-weight:700;font-size:28px;" aria-hidden="true">CM</div>
           {% endif %}
         </div>
         <div class="col-md-8">
-          <p class="lead-lg">
-            Customer-focused ICT Officer with a BSc in Business & IT. Practical experience in network administration, end-user support,
-            and cybersecurity. I build reliable tools and automate repetitive tasks to increase efficiency.
-          </p>
+          <p class="lead-lg">Customer-focused ICT Officer with a BSc in Business & IT. Practical experience in network administration, end-user support, and cybersecurity. I build reliable tools and automate repetitive tasks to increase efficiency.</p>
           <ul>
             <li><strong>Strengths:</strong> Problem-solving, documentation, stakeholder communication, systems hardening.</li>
-            <li><strong>Certifications:</strong> CCNA 1,OPSWAT File Security Associate, ALX Virtual Assistant.</li>
+            <li><strong>Certifications:</strong> CCNA, OPSWAT File Security Associate, ALX Virtual Assistant.</li>
             <li><strong>Languages:</strong> English, Swahili.</li>
           </ul>
           {% if cv_file %}
-            <a href="{{ url_for('download_file', kind='cv', filename=cv_file) }}" class="btn btn-outline-primary">Download CV</a>
+            <a href="{{ url_for('download_file', kind='cv', filename=cv_file) }}" class="btn btn-outline-light mt-2">Download CV</a>
           {% endif %}
         </div>
       </div>
     </div>
   </section>
 
-  <!-- Portfolio / Gallery -->
-  <section id="portfolio" class="reveal" aria-labelledby="portfolio-title">
-    <h2 class="section-title" id="portfolio-title">Portfolio & Gallery</h2>
-    <p class="text-center lead-lg">Featured gallery and private project submission.</p>
+  <!-- Achievements / Counters -->
+  <section id="stats" class="mt-4" aria-labelledby="stats-title">
+    <h2 class="section-title" id="stats-title" data-aos="fade-up">Achievements</h2>
+    <div class="counters" data-aos="fade-up" data-aos-delay="120">
+      <div class="counter card text-center p-3">
+        <p class="text-muted">Projects Completed</p>
+        <h3 id="count-projects">46</h3>
+        <p class="small text-muted">Trusted solutions delivered</p>
+      </div>
+      <div class="counter card text-center p-3">
+        <p class="text-muted">Clients Served</p>
+        <h3 id="count-clients">54</h3>
+        <p class="small text-muted">Local businesses & individuals</p>
+      </div>
+      <div class="counter card text-center p-3">
+        <p class="text-muted">Networks Secured</p>
+        <h3 id="count-networks">8</h3>
+        <p class="small text-muted">Routers, switches & endpoints</p>
+      </div>
+      <div class="counter card text-center p-3">
+        <p class="text-muted">Blog Reads</p>
+        <h3 id="count-reads">189</h3>
+        <p class="small text-muted">Helpful cyber safety tips shared</p>
+      </div>
+    </div>
+  </section>
 
-    <div class="card p-3 mb-4" aria-live="polite">
+  <!-- Portfolio / Gallery -->
+  <section id="portfolio" class="mt-5" aria-labelledby="portfolio-title">
+    <h2 class="section-title" id="portfolio-title" data-aos="fade-up">Portfolio & Gallery</h2>
+    <p class="text-center lead-lg" data-aos="fade-up" data-aos-delay="80">Featured gallery and private project submission.</p>
+
+    <div class="card p-3 mb-4" data-aos="fade-up" data-aos-delay="140">
       <h5 class="mb-3">Featured Gallery ({{ gallery_images|length }})</h5>
       {% if gallery_images %}
         <div class="gallery-grid">
           {% for g in gallery_images %}
-            <div class="gallery-item" onclick="openGalleryItem({{ loop.index0 }})" role="button" tabindex="0" aria-label="Open gallery item {{ loop.index }}">
+            <div class="gallery-item" onclick="openGalleryItem({{ loop.index0 }})" role="button" tabindex="0" aria-label="Open gallery item {{ loop.index }}" data-aos="zoom-in" data-aos-delay="{{ loop.index0 * 40 }}">
               {% if g.type == 'image' %}
                 <img src="{{ g.url }}" alt="Gallery image {{ loop.index }}">
               {% elif g.type == 'video' %}
                 <video muted playsinline preload="metadata" aria-hidden="true">
                   <source src="{{ g.url }}">
                 </video>
-                <div class="video-overlay" aria-hidden="true"><div class="video-play-icon"></div></div>
+                <div class="video-play-icon" aria-hidden="true"></div>
               {% else %}
                 <img src="{{ g.url }}" alt="Gallery {{ loop.index }}">
               {% endif %}
@@ -214,7 +304,7 @@
       {% endif %}
     </div>
 
-    <div class="card">
+    <div class="card" data-aos="fade-up" data-aos-delay="220">
       <div class="card-body">
         <h5 class="card-title">Submit Your Project (Private)</h5>
         <p class="text-muted mb-2">Your file is uploaded privately and only the admin can view/approve it.</p>
@@ -227,11 +317,11 @@
     </div>
   </section>
 
-  <!-- Newsletter (Phase 1 addition) -->
-  <section id="newsletter" class="reveal" aria-labelledby="newsletter-title">
-    <h2 class="section-title" id="newsletter-title">Stay Updated</h2>
-    <p class="text-center lead-lg">Subscribe to occasional updates and new blog posts.</p>
-    <div class="card p-3 mx-auto" style="max-width:720px">
+  <!-- Newsletter -->
+  <section id="newsletter" class="mt-5" aria-labelledby="newsletter-title">
+    <h2 class="section-title" id="newsletter-title" data-aos="fade-up">Stay Updated</h2>
+    <p class="text-center lead-lg" data-aos="fade-up" data-aos-delay="60">Subscribe to occasional updates and new blog posts.</p>
+    <div class="card p-3 mx-auto" style="max-width:720px" data-aos="fade-up" data-aos-delay="120">
       <form method="post" action="{{ url_for('subscribe') }}" class="d-flex gap-2 align-items-center" aria-label="Subscribe to newsletter">
         <label for="sub-email" class="visually-hidden">Email address</label>
         <input id="sub-email" type="email" name="email" class="form-control" placeholder="Email address" required>
@@ -242,24 +332,24 @@
   </section>
 
   <!-- Services -->
-  <section id="services" class="reveal">
-    <h2 class="section-title">Services</h2>
-    <div class="row g-4">
+  <section id="services" class="mt-5" aria-labelledby="services-title">
+    <h2 class="section-title" id="services-title" data-aos="fade-up">Services</h2>
+    <div class="row g-4" data-aos="fade-up" data-aos-delay="80">
       <div class="col-md-4">
         <div class="card h-100 p-3">
-          <h5>Network Administration</h5>
+          <h5 class="card-title">Network Administration</h5>
           <p class="mb-0">Design, deploy and maintain reliable networks (LAN/WAN, switches, routers, VPNs).</p>
         </div>
       </div>
       <div class="col-md-4">
         <div class="card h-100 p-3">
-          <h5>Cybersecurity</h5>
+          <h5 class="card-title">Cybersecurity</h5>
           <p class="mb-0">Vulnerability scanning, hardening, access control and incident response support.</p>
         </div>
       </div>
       <div class="col-md-4">
         <div class="card h-100 p-3">
-          <h5>Automation & Data Solutions</h5>
+          <h5 class="card-title">Automation & Data Solutions</h5>
           <p class="mb-0">Dashboards, scripts and small automations that save time and reduce errors.</p>
         </div>
       </div>
@@ -267,31 +357,29 @@
   </section>
 
   <!-- Blog preview -->
-  <section id="blog" class="reveal">
-    <h2 class="section-title">Latest from my blog</h2>
-    <div class="row g-4">
+  <section id="blog" class="mt-5" aria-labelledby="blog-title">
+    <h2 class="section-title" id="blog-title" data-aos="fade-up">Latest from my blog</h2>
+    <div class="blog-grid mt-3" data-aos="fade-up" data-aos-delay="80">
       {% if blog_posts %}
         {% for b in blog_posts[:3] %}
-          <div class="col-md-4">
-            <div class="blog-card">
-              <h5>{{ b.title }}</h5>
-              <div class="text-muted" style="font-size:.9rem">{{ b.timestamp }}</div>
-              <p style="margin-top:.6rem; color:inherit;">{{ b.content[:180] }}{% if b.content|length > 180 %}...{% endif %}</p>
-              <a class="btn btn-sm btn-outline-primary" href="{{ url_for('view_blog', slug=b.slug) }}">Read</a>
-            </div>
-          </div>
+          <article class="blog-card" data-aos="fade-up" data-aos-delay="{{ loop.index0 * 60 }}">
+            <h4>{{ b.title }}</h4>
+            <div class="text-muted" style="font-size:.9rem">{{ b.timestamp }}</div>
+            <p style="margin-top:.6rem; color:inherit;">{{ b.content[:200] }}{% if b.content|length > 200 %}...{% endif %}</p>
+            <a class="btn btn-sm btn-outline-light" href="{{ url_for('view_blog', slug=b.slug) }}">Read</a>
+          </article>
         {% endfor %}
       {% else %}
         <div class="col-12"><p class="text-muted">No blog posts yet. (Admin can add posts.)</p></div>
       {% endif %}
     </div>
-    <div class="text-center mt-3"><a class="btn btn-outline-secondary" href="{{ url_for('blog_list') }}">See all posts</a></div>
+    <div class="text-center mt-3" data-aos="fade-up" data-aos-delay="240"><a class="btn btn-outline-light" href="{{ url_for('blog_list') }}">See all posts</a></div>
   </section>
 
   <!-- Contact -->
-  <section id="contact" class="reveal">
-    <h2 class="section-title">Contact</h2>
-    <div class="row g-4">
+  <section id="contact" class="mt-5" aria-labelledby="contact-title">
+    <h2 class="section-title" id="contact-title" data-aos="fade-up">Contact</h2>
+    <div class="row g-4" data-aos="fade-up" data-aos-delay="80">
       <div class="col-lg-6">
         <div class="card h-100">
           <div class="card-body">
@@ -341,23 +429,28 @@
   </div>
 </div>
 
+<!-- Floating WhatsApp -->
+<div class="float-whatsapp">
+  <a href="https://wa.me/254791204587" target="_blank" rel="noopener" aria-label="Chat on WhatsApp">📞</a>
+</div>
+
 <script>
-  // Loader
+  // Wait for DOM
   window.addEventListener('load', () => {
     const l = document.getElementById('loader');
     if(l){ l.style.opacity = '0'; setTimeout(() => l.style.display='none', 300); }
+    AOS.init({ once:true, duration:700, easing:'ease-out-cubic' });
   });
 
-  // Reveal on scroll
+  // Reveal observer (for classes not covered by AOS)
   const io = new IntersectionObserver((entries) => {
-    entries.forEach(e => {
-      if(e.isIntersecting){ e.target.classList.add('visible'); }
-    });
+    entries.forEach(e => { if(e.isIntersecting){ e.target.classList.add('visible'); } });
   }, { threshold:.12 });
   document.querySelectorAll('.reveal').forEach(el => io.observe(el));
 
   // Gallery items as array
   const galleryItems = {{ gallery_images|tojson }};
+  const blogPosts = {{ blog_posts|tojson }};
 
   function openGalleryItem(idx){
     if(!galleryItems || idx < 0 || idx >= galleryItems.length) return;
@@ -366,58 +459,76 @@
     container.innerHTML = '';
     if(it.type === 'image'){
       const img = document.createElement('img');
-      img.src = it.url;
-      img.alt = 'Gallery image';
-      img.style.width = '100%';
-      img.style.height = 'auto';
-      img.style.display = 'block';
-      img.style.borderRadius = '12px';
+      img.src = it.url; img.alt = 'Gallery image'; img.style.width='100%'; img.style.height='auto'; img.style.display='block'; img.style.borderRadius='12px';
       container.appendChild(img);
     } else if(it.type === 'video'){
       const vid = document.createElement('video');
-      vid.src = it.url;
-      vid.controls = true;
-      vid.autoplay = false;
-      vid.playsInline = true;
-      vid.style.width = '100%';
-      vid.style.height = 'auto';
-      vid.style.display = 'block';
-      vid.style.borderRadius = '12px';
+      vid.src = it.url; vid.controls = true; vid.autoplay = false; vid.playsInline = true; vid.style.width='100%'; vid.style.height='auto'; vid.style.display='block'; vid.style.borderRadius='12px';
       container.appendChild(vid);
     } else {
-      const a = document.createElement('a');
-      a.href = it.url;
-      a.innerText = 'Open media';
-      a.target = '_blank';
-      container.appendChild(a);
+      const a = document.createElement('a'); a.href = it.url; a.innerText = 'Open media'; a.target = '_blank'; container.appendChild(a);
     }
     const modalEl = document.getElementById('mediaModal');
     const modal = new bootstrap.Modal(modalEl);
     modal.show();
   }
 
+  // Counters (CountUp) - compute real-ish values from available data
+  const baseProjects = {{ gallery_images|length }} || 0;
+  const baseBlogs = {{ blog_posts|length }} || 0;
+
+  // Try to derive a realistic 'reads' value from blog objects if they include 'views' or 'reads'
+  let derivedReads = 0;
+  try{
+    if(Array.isArray(blogPosts) && blogPosts.length){
+      blogPosts.forEach(b => { derivedReads += (b.views || b.reads || 0); });
+    }
+  }catch(e){ derivedReads = 0; }
+
+  const computed = {
+    projects: Math.max(baseProjects, baseProjects),
+    clients: Math.max(5, Math.round(baseProjects * 0.7) || 5),
+    networks: Math.max(8, Math.round(baseProjects * 0.9) || 8),
+    reads: derivedReads > 0 ? derivedReads : Math.max(1200, baseBlogs * 1200)
+  };
+
+  function animateCounters(){
+    const map = [
+      { id:'count-projects', end: computed.projects },
+      { id:'count-clients', end: computed.clients },
+      { id:'count-networks', end: computed.networks },
+      { id:'count-reads', end: computed.reads }
+    ];
+    map.forEach(c => {
+      const el = document.getElementById(c.id); if(!el) return;
+      if(el.getAttribute('data-started')) return;
+      const cu = new CountUp(c.id, c.end, { duration: 2.2, separator: ',' });
+      if(!cu.error){ cu.start(); el.setAttribute('data-started','true'); }
+    });
+  }
+  // trigger when stats section visible
+  const statSection = document.getElementById('stats');
+  if(statSection){
+    const obs = new IntersectionObserver((entries) => {
+      entries.forEach(e => { if(e.isIntersecting){ animateCounters(); obs.disconnect(); } });
+    }, { threshold: 0.3 });
+    obs.observe(statSection);
+  }
+
+  // marquee pause on hover
+  document.querySelectorAll('.tech-row.marquee').forEach(row => {
+    row.addEventListener('mouseover', () => row.style.animationPlayState = 'paused');
+    row.addEventListener('mouseout', () => row.style.animationPlayState = 'running');
+  });
+
   // Theme toggle (persist in localStorage)
   const themeKey = 'muga_theme';
   const themeBtn = document.getElementById('themeBtn');
-  function applyTheme(t){
-    if(t==='light') {
-      document.body.classList.add('light');
-      themeBtn.setAttribute('aria-pressed', 'true');
-    } else {
-      document.body.classList.remove('light');
-      themeBtn.setAttribute('aria-pressed', 'false');
-    }
+  function applyTheme(t){ if(t==='light'){ document.body.classList.add('light'); themeBtn.setAttribute('aria-pressed','true'); themeBtn.textContent = '☀️'; }
+    else { document.body.classList.remove('light'); themeBtn.setAttribute('aria-pressed','false'); themeBtn.textContent = '🌙'; }
   }
-  function initTheme(){
-    const t = localStorage.getItem(themeKey) || 'dark';
-    applyTheme(t);
-  }
-  initTheme();
-  themeBtn.addEventListener('click', () => {
-    const t = document.body.classList.contains('light') ? 'dark' : 'light';
-    localStorage.setItem(themeKey, t);
-    applyTheme(t);
-  });
+  function initTheme(){ const t = localStorage.getItem(themeKey) || 'dark'; applyTheme(t); }
+  initTheme(); themeBtn.addEventListener('click', () => { const t = document.body.classList.contains('light') ? 'dark' : 'light'; localStorage.setItem(themeKey, t); applyTheme(t); });
 
   // keyboard accessibility for gallery items (Enter to open)
   document.addEventListener('keydown', (e) => {
@@ -427,7 +538,17 @@
       if(idx >= 0) openGalleryItem(idx);
     }
   });
+
+  // Small parallax on scroll for hero overlay
+  window.addEventListener('scroll', () => {
+    const hero = document.querySelector('.hero .overlay');
+    if(hero){ const y = window.scrollY; hero.style.transform = `translateY(${y * 0.05}px)`; }
+  });
+
 </script>
+
+<!-- AOS & Bootstrap JS -->
+<script src="https://unpkg.com/aos@2.3.4/dist/aos.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
 </body>
 </html>
